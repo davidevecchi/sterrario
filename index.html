@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>Sterrario</title>
+<link rel="stylesheet" href="js/vendor/leaflet.css">
+<link rel="stylesheet" href="js/vendor/MarkerCluster.css">
+<link rel="stylesheet" href="js/vendor/MarkerCluster.Default.css">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div id="app">
+
+  <header id="topbar">
+    <button id="sidebarToggle" aria-label="Menu">☰</button>
+    <h1 id="tripTitle" title="Torna all'elenco viaggi">Sterrario</h1>
+    <nav id="breadcrumb" class="breadcrumb topbar-crumbs"></nav>
+    <div class="topbar-toggles" id="topbarToggles">
+      <button type="button" class="topbar-toggle active" id="toggleStarts" aria-pressed="true" title="Mostra/nascondi partenza, arrivo e tappe">🚩</button>
+      <button type="button" class="topbar-toggle active" id="togglePois" aria-pressed="true" title="Mostra/nascondi punti di interesse">📍</button>
+      <button type="button" class="topbar-toggle" id="togglePhotos" aria-pressed="false" title="Mostra/nascondi foto">📷</button>
+    </div>
+  </header>
+
+  <aside id="sidebar">
+    <div id="sidebarScroll">
+      <section class="panel" id="pickerPanel">
+        <h2 class="panel-toggle" id="pickerToggle">
+          <button class="chevron" id="pickerChevron" aria-label="Espandi/comprimi">▾</button>
+          <span>Percorsi</span>
+        </h2>
+        <div class="picker-context" id="pickerContext">
+          <button class="picker-back" id="pickerBack" aria-label="Torna a tutti i percorsi" title="Torna a tutti i percorsi" hidden>←</button>
+          <span id="pickerContextLabel">Tutti i viaggi</span>
+        </div>
+        <div class="trip-sort" id="tripSort">
+          <button data-sort="date" class="active">Data</button>
+          <button data-sort="distance">Distanza</button>
+          <button data-sort="gain">Dislivello</button>
+          <button data-sort="days">Durata</button>
+        </div>
+        <ul id="pickerList" class="timeline-list"></ul>
+      </section>
+
+      <section class="panel collapsed" id="exploreModePanel">
+        <h2 class="panel-toggle" id="exploreModeToggle">
+          <button class="chevron" id="exploreModeChevron" aria-label="Espandi/comprimi">▸</button>
+          <span>Esplora dati</span>
+        </h2>
+        <div class="segmented" id="exploreLegendTabs">
+          <button data-mode="trip" class="active">Tracce</button>
+          <button data-mode="surface">Fondo</button>
+          <button data-mode="highway">Tipo strada</button>
+          <button data-mode="gradient">Pendenza</button>
+        </div>
+        <div class="explore-note">Consulta la legenda, non cambia il colore reale in mappa</div>
+        <div id="modeLegend" class="legend"></div>
+      </section>
+
+      <section class="panel collapsed" id="poiListPanel">
+        <h2 class="panel-toggle" id="poiListToggle">
+          <button class="chevron" id="poiListChevron" aria-label="Espandi/comprimi">▸</button>
+          <span id="poiListLabel">Punti di interesse</span> (<span id="poiCount">0</span>)
+        </h2>
+        <ul id="poiList"></ul>
+      </section>
+    </div>
+  </aside>
+
+  <main id="mapWrap">
+    <div id="map"></div>
+
+    <button type="button" id="recenterBtn" class="map-recenter-btn" title="Centra la mappa sulla selezione" aria-label="Centra la mappa sulla selezione">⌖</button>
+
+    <div id="poiNavRow" class="hidden">
+      <button id="poiPrev" class="poi-side-nav poi-side-nav-prev" aria-label="Precedente">
+        <span class="poi-side-nav-shape">
+          <span class="poi-side-nav-outline"></span>
+          <span class="poi-side-nav-fill"></span>
+          <span class="poi-side-nav-content">
+            <span class="poi-side-nav-text">
+              <span class="poi-side-nav-label"></span>
+              <span class="poi-side-nav-dist"></span>
+            </span>
+            <span class="poi-side-nav-badge">
+              <span class="poi-side-nav-badge-sq"></span>
+              <span class="poi-side-nav-badge-sq"></span>
+            </span>
+          </span>
+        </span>
+      </button>
+
+      <div id="poiDetail">
+        <button id="poiCollapse" aria-label="Comprimi/espandi">▾</button>
+        <button id="poiClose" aria-label="Chiudi">✕</button>
+        <div id="poiDetailBody"></div>
+      </div>
+
+      <button id="poiNext" class="poi-side-nav poi-side-nav-next" aria-label="Successivo">
+        <span class="poi-side-nav-shape">
+          <span class="poi-side-nav-outline"></span>
+          <span class="poi-side-nav-fill"></span>
+          <span class="poi-side-nav-content">
+            <span class="poi-side-nav-badge">
+              <span class="poi-side-nav-badge-sq"></span>
+              <span class="poi-side-nav-badge-sq"></span>
+            </span>
+            <span class="poi-side-nav-text">
+              <span class="poi-side-nav-label"></span>
+              <span class="poi-side-nav-dist"></span>
+            </span>
+          </span>
+        </span>
+      </button>
+    </div>
+  </main>
+
+  <div id="noteModal" class="hidden">
+    <div id="noteModalPaper">
+      <button id="noteModalClose" aria-label="Chiudi">✕</button>
+      <div id="noteModalTitle"></div>
+      <div id="noteModalBody"></div>
+    </div>
+  </div>
+
+  <div id="photoLightbox" class="hidden">
+    <button id="photoLightboxClose" aria-label="Chiudi">✕</button>
+    <button id="photoLightboxPrev" aria-label="Precedente">←</button>
+    <div id="photoLightboxBody">
+      <div id="photoLightboxImgWrap">
+        <img id="photoLightboxImg" alt="">
+        <div id="photoLightboxPanoBadge" class="hidden" aria-label="Panorama">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M3.32 9.91c.82 0 1.49.67 1.49 1.49s-.67 1.49-1.49 1.49S1.83 12.22 1.83 11.4s.67-1.49 1.49-1.49m17.36 0c.82 0 1.49.67 1.49 1.49s-.67 1.49-1.49 1.49-1.49-.67-1.49-1.49.67-1.49 1.49-1.49M12 5c5.52 0 10 3.13 10 7s-4.48 7-10 7S2 15.87 2 12s4.48-7 10-7m0 2c-4.41 0-8 2.24-8 5s3.59 5 8 5 8-2.24 8-5-3.59-5-8-5z"/></svg>
+        </div>
+      </div>
+      <div id="photoLightboxCaption"></div>
+    </div>
+    <button id="photoLightboxNext" aria-label="Successivo">→</button>
+  </div>
+
+  <div id="photoPresentation" class="hidden">
+    <button id="photoPresentationClose" aria-label="Chiudi">&#10005;</button>
+    <button id="photoPresentationPrev" aria-label="Precedente">&#8249;</button>
+    <img id="photoPresentationImg" alt="">
+    <button id="photoPresentationNext" aria-label="Successivo">&#8250;</button>
+  </div>
+
+  <footer id="elevationPanel">
+    <div id="elevationHeader">
+      <div id="elevationDayInfo"></div>
+      <div id="colorModeToggle" class="segmented">
+        <button class="active" data-mode="trip">Tracce</button>
+        <button data-mode="surface">Fondo</button>
+        <button data-mode="highway">Tipo strada</button>
+        <button data-mode="gradient">Pendenza</button>
+      </div>
+      <button id="elevationCollapse" aria-label="Comprimi/espandi">▾</button>
+    </div>
+    <div id="elevationChartWrap" class="hidden">
+      <canvas id="elevationChart"></canvas>
+      <div id="chartTooltip" class="chart-tooltip hidden">
+        <div class="chart-tooltip-header">
+          <span class="chart-tooltip-title"></span>
+          <span class="chart-tooltip-ele"></span>
+        </div>
+        <div class="chart-tooltip-body"></div>
+      </div>
+    </div>
+    <div id="dayTimelineStrip"></div>
+  </footer>
+
+</div>
+
+<script src="js/vendor/leaflet.js"></script>
+<script src="js/vendor/leaflet.markercluster.js"></script>
+<script src="js/vendor/leaflet.polylineDecorator.js"></script>
+<script src="js/vendor/chart.umd.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>
