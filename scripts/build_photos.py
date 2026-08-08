@@ -388,7 +388,7 @@ def main():
 
     photo_paths = sorted(
         p for p in originals_dir.rglob("*")
-        if p.is_file() and p.suffix.lower() in IMAGE_EXTS
+        if p.is_file() and p.suffix.lower() in IMAGE_EXTS and p.parent.name[0] != '.'
     )
 
     if not photo_paths:

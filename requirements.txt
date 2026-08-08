@@ -1,0 +1,7 @@
+pyrosm>=0.13.1
+shapely>=2.0
+pillow>=10.0
+
+# Optional, not pip-installable: install the `osmium` CLI (osmium-tool) via your
+# system package manager (e.g. `dnf install osmium-tool`) to speed up
+# build_trips.py's OSM way extraction for whole-country regions.

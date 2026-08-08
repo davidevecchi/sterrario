@@ -16,12 +16,20 @@ import sys
 import math
 import json
 import time
-import concurrent.futures
+import shutil
+import hashlib
+import itertools
+import threading
+import subprocess
 import urllib.request
-import urllib.parse
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from datetime import datetime, timezone
+
+import pyrosm
+from shapely.geometry import Point, MultiPoint, mapping as shapely_mapping, shape as shapely_shape
+from shapely.strtree import STRtree
+from shapely.prepared import prep
 
 NS = {
     "gpx": "http://www.topografix.com/GPX/1/1",
@@ -45,24 +53,46 @@ def to_roman(n):
 
 SIMPLIFY_TOLERANCE_M = 2.0  # Douglas-Peucker tolerance in meters
 
-# --- Surface/highway lookup (OSM via Overpass, tile-cached) ----------------
+# --- Surface/highway lookup (local OSM extracts via Geofabrik + pyrosm) ----
 # surface/highway are no longer read from whatever Komoot happened to embed
 # in the GPX <extensions> (many exports don't have them at all); instead
-# every point is matched against the real OSM road network. Rather than
-# querying Overpass per route -- which re-fetches the same OSM ways again and
-# again wherever different trips are nearby or overlap -- every trip in a
-# single build is first covered by the *minimum* set of fixed-size tiles
-# that touch any of their points; each tile is fetched from Overpass at most
-# once and cached to disk (data/.osm_tiles/), so a later build that
-# touches the same area doesn't hit the network for it again at all.
-OVERPASS_URL = "https://overpass-api.de/api/interpreter"
-TILE_DEG = 0.1           # tile size in degrees (~7-11 km/side at these latitudes) -- kept
-                         # small so a single tile's Overpass query returns few enough ways
-                         # to finish well under the server's timeout
-QUERY_RADIUS_M = 30.0    # how far a way may be from a point to still count as its match
-TILE_FETCH_WORKERS = 1   # concurrent Overpass requests for cache-miss tiles (the public
-                         # instance rate-limits/bans concurrent clients, so stay serial)
-GRID_DEG = 0.002         # spatial-index cell size (~200 m) for nearest-way lookup
+# every point is matched against the real OSM road network. This used to
+# query the public Overpass API per corridor point, but that instance isn't
+# meant for this volume of use (frequent 429s/connection-refused). Instead,
+# every point is resolved to the smallest Geofabrik region (country or
+# country-subdivision) containing it; each region's .osm.pbf is downloaded
+# once and cached forever under data/.osm_extracts/ (a personal archive of
+# already-completed trips doesn't need "live" OSM data), then read locally
+# with pyrosm -- no network access at all once every region a trip touches
+# has already been downloaded.
+GEOFABRIK_INDEX_URL = "https://download.geofabrik.de/index-v1.json"
+GEOFABRIK_INDEX_MAX_AGE_DAYS = 30  # re-fetch the region catalog once it's this stale
+REGION_CONTAINMENT_BUFFER_DEG = 0.02  # ~2km slack for a point landing in a small gap/
+                                       # overlap between neighboring regions' polygons
+REGION_BBOX_MARGIN_DEG = 0.02  # ~2km margin around a trip's points within a region,
+                                # passed to pyrosm as a bounding_box so a whole,
+                                # undivided-country extract (e.g. Austria) isn't fully
+                                # parsed into memory just because a trip clips a corner of it
+CORRIDOR_BUFFER_DEG = 0.003    # ~300m buffer around a trip's points within a region, used
+                                # to carve a narrow route corridor out of a whole-country
+                                # .osm.pbf with osmium -- a trip through the Alps can cross
+                                # Austria's whole bbox without ever needing that bbox's ~2M
+                                # highway ways, only the ones within QUERY_RADIUS_M of it
+CORRIDOR_SIMPLIFY_DEG = 0.0005  # simplify tolerance for the corridor polygon (much smaller
+                                 # than CORRIDOR_BUFFER_DEG so the route shape is preserved) --
+                                 # keeps osmium's per-node point-in-polygon test cheap by
+                                 # capping vertex count instead of leaving every buffered
+                                 # point's full circle in the (multi)polygon
+# Geofabrik "special" regions (alps, dach, britain-and-ireland, ...) sit in the catalog
+# at the same tree depth as real countries and have no children either, so a plain
+# "leaf = nobody's parent" rule would wrongly admit them as candidates even though their
+# polygons overlap several real countries'. Filled in by hand after inspecting the
+# fetched index-v1.json for such cross-cutting ids.
+GEOFABRIK_EXCLUDED_REGION_IDS = frozenset({
+    "alps", "dach", "britain-and-ireland",
+})
+QUERY_RADIUS_M = 30.0  # how far a way may be from a point to still count as its match
+GRID_DEG = 0.002       # spatial-index cell size (~200 m) for nearest-way lookup
 
 
 def haversine(lat1, lon1, lat2, lon2):
@@ -78,99 +108,401 @@ def _grid_cell(lat, lon):
     return (math.floor(lat / GRID_DEG), math.floor(lon / GRID_DEG))
 
 
-def tile_key(lat, lon):
-    return (math.floor(lat / TILE_DEG), math.floor(lon / TILE_DEG))
+def _retry_after_s(exc):
+    """Seconds to wait before retrying, from a 429 response's Retry-After
+    header, or None if there isn't one/it isn't an HTTPError."""
+    headers = getattr(exc, "headers", None)
+    if headers is None:
+        return None
+    value = headers.get("Retry-After")
+    try:
+        return float(value) if value is not None else None
+    except ValueError:
+        return None
 
 
-def tile_bbox(tile):
-    ty, tx = tile
-    south, west = ty * TILE_DEG, tx * TILE_DEG
-    return south, west, south + TILE_DEG, west + TILE_DEG
+def _remote_content_length_mb(url):
+    """Size in MB of `url`'s response, via a HEAD request, or None if unavailable
+    (e.g. no Content-Length header, or the request fails -- purely informational,
+    so any failure here should never block the actual download)."""
+    try:
+        req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "sterrario/1.0"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            total = resp.headers.get("Content-Length")
+            return int(total) / (1024 * 1024) if total else None
+    except Exception:
+        return None
 
 
-def fetch_tile_ways(tile):
-    """Queries Overpass for every OSM highway way inside this tile's bbox."""
-    south, west, north, east = tile_bbox(tile)
-    query = f'[out:json][timeout:300];way({south:.6f},{west:.6f},{north:.6f},{east:.6f})[highway];out geom;'
-    data = urllib.parse.urlencode({"data": query}).encode("utf-8")
-    req = urllib.request.Request(OVERPASS_URL, data=data, headers={"User-Agent": "sterrario/1.0"})
-    with urllib.request.urlopen(req, timeout=320) as resp:
-        result = json.loads(resp.read().decode("utf-8"))
-    ways = []
-    for el in result.get("elements", []):
-        if el.get("type") != "way" or "geometry" not in el:
-            continue
-        ways.append({
-            "id": el.get("id"),
-            "tags": el.get("tags", {}),
-            "geometry": [(n["lat"], n["lon"]) for n in el["geometry"]],
+def _download_with_retry(url, dest_tmp_path, on_progress=None):
+    """Downloads `url` to `dest_tmp_path` (streamed, chunked -- .pbf files can be
+    tens/hundreds of MB), retrying on failure with backoff (honoring a 429's
+    Retry-After header when present). Raises on exhausted retries; the caller
+    must not treat dest_tmp_path as complete/rename it into place in that case.
+    on_progress(str), if given, is called with a short human-readable status
+    (e.g. a Spinner's update()) instead of this printing anything itself."""
+    wait_s = 15.0
+    last_exc = None
+    for attempt in range(5):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "sterrario/1.0"})
+            with urllib.request.urlopen(req, timeout=320) as resp, open(dest_tmp_path, "wb") as f:
+                total = resp.headers.get("Content-Length")
+                total_mb = int(total) / (1024 * 1024) if total else None
+                downloaded = 0
+                last_update = 0.0
+                while True:
+                    chunk = resp.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    now = time.monotonic()
+                    if on_progress and now - last_update >= 0.2:
+                        done_mb = downloaded / (1024 * 1024)
+                        if total_mb:
+                            on_progress(f"{done_mb:.0f}/{total_mb:.0f} MB ({100 * done_mb / total_mb:.0f}%)")
+                        else:
+                            on_progress(f"{done_mb:.0f} MB")
+                        last_update = now
+            return
+        except Exception as e:
+            last_exc = e
+            if attempt == 4:
+                break
+            wait_s = _retry_after_s(e) or wait_s
+            print(f"\n  download failed ({e}), retrying in {wait_s:.0f}s...")
+            time.sleep(wait_s)
+            wait_s = min(wait_s * 2, 120.0)
+    raise last_exc
+
+
+def load_region_catalog(cache_dir):
+    """Returns the Geofabrik region catalog as a list of {id, parent, name, pbf_url,
+    geometry} dicts, downloading/caching it at cache_dir/geofabrik-index.json if
+    missing or older than GEOFABRIK_INDEX_MAX_AGE_DAYS."""
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    path = cache_dir / "geofabrik-index.json"
+    if path.exists():
+        age_days = (time.time() - path.stat().st_mtime) / 86400
+        if age_days <= GEOFABRIK_INDEX_MAX_AGE_DAYS:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            return _parse_region_catalog(raw)
+        print("  Geofabrik region catalog is stale, re-fetching...")
+    else:
+        print("  Fetching Geofabrik region catalog (first run)...")
+
+    tmp_path = path.with_suffix(".json.tmp")
+    _download_with_retry(GEOFABRIK_INDEX_URL, tmp_path)
+    tmp_path.replace(path)
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    return _parse_region_catalog(raw)
+
+
+def _parse_region_catalog(raw):
+    regions = []
+    for feature in raw["features"]:
+        props = feature["properties"]
+        regions.append({
+            "id": props["id"],
+            "parent": props.get("parent"),
+            "name": props["name"],
+            "pbf_url": props["urls"]["pbf"],
+            "geometry": feature["geometry"],
         })
-    if not ways:
-        raise ValueError("empty result (likely a truncated/errored response)")
+    return regions
+
+
+def build_leaf_region_index(catalog):
+    """Leaf regions are catalog entries nobody else lists as `parent`, minus the
+    hand-curated GEOFABRIK_EXCLUDED_REGION_IDS (cross-cutting special regions like
+    "alps" that would otherwise slip into the leaf set). Returns (strtree,
+    polygon_by_geom_id, region_by_id) for fast point -> region lookups."""
+    parents = {r["parent"] for r in catalog if r["parent"]}
+    region_by_id = {r["id"]: r for r in catalog}
+    leaves = [r for r in catalog if r["id"] not in parents and r["id"] not in GEOFABRIK_EXCLUDED_REGION_IDS]
+
+    polygons = []
+    polygon_by_geom_id = {}
+    for r in leaves:
+        poly = shapely_shape(r["geometry"])
+        polygon_by_geom_id[id(poly)] = (r["id"], poly, prep(poly), poly.buffer(REGION_CONTAINMENT_BUFFER_DEG))
+        polygons.append(poly)
+    strtree = STRtree(polygons)
+    return strtree, polygon_by_geom_id, region_by_id
+
+
+def region_id_for_point(lat, lon, strtree, polygon_by_geom_id):
+    """Leaf region id containing (lat, lon), or None if it falls outside every
+    (buffered) leaf polygon."""
+    point = Point(lon, lat)
+    candidate_idxs = strtree.query(point.buffer(REGION_CONTAINMENT_BUFFER_DEG))
+    candidates = [polygon_by_geom_id[id(strtree.geometries[i])] for i in candidate_idxs]
+    for region_id, _, prepared, _ in candidates:
+        if prepared.contains(point):
+            return region_id
+    for region_id, _, _, buffered in candidates:
+        if buffered.contains(point):
+            return region_id
+    return None
+
+
+def collect_region_points(trips_raw, strtree, polygon_by_geom_id):
+    """Resolves every point of every track in trips_raw to a leaf region id and
+    returns {region_id: [(lat, lon), ...]}, the points actually assigned to that
+    region -- NOT the whole region's own polygon. Feeds both region_bbox_from_points
+    (pyrosm's out_of_core fallback bounding_box) and region_corridor_from_points
+    (osmium's tight route-corridor extract)."""
+    points = {}
+    unresolved = 0
+    for trip_raw in trips_raw:
+        for track_raw in trip_raw["tracks_raw"]:
+            for p in track_raw["raw_points"]:
+                lat, lon = p["lat"], p["lon"]
+                region_id = region_id_for_point(lat, lon, strtree, polygon_by_geom_id)
+                if region_id is None:
+                    unresolved += 1
+                    continue
+                points.setdefault(region_id, []).append((lat, lon))
+    if unresolved:
+        print(f"  {unresolved} point(s) matched no Geofabrik region (will have no surface/highway)")
+    return points
+
+
+def region_bbox_from_points(points):
+    """(min_lon, min_lat, max_lon, max_lat) covering `points`, plus REGION_BBOX_MARGIN_DEG
+    of margin. Many Geofabrik regions are whole, undivided countries (e.g. Austria), and
+    parsing a country-sized .osm.pbf without restricting pyrosm to the small area a trip
+    actually touches can use tens of GB of RAM; this bbox is passed to pyrosm.OSM's
+    bounding_box so it only loads the relevant slice."""
+    lats = [lat for lat, _ in points]
+    lons = [lon for _, lon in points]
+    m = REGION_BBOX_MARGIN_DEG
+    return (min(lons) - m, min(lats) - m, max(lons) + m, max(lats) + m)
+
+
+def region_corridor_from_points(points):
+    """A (Multi)Polygon tracing a CORRIDOR_BUFFER_DEG-wide corridor around `points`,
+    simplified to keep osmium's per-node point-in-polygon test cheap (see
+    CORRIDOR_BUFFER_DEG/CORRIDOR_SIMPLIFY_DEG). Bounding a whole-country region by its
+    trip points' bbox (region_bbox_from_points) still leaves the bbox itself
+    country-sized whenever a trip crosses most of that country (e.g. the Alps) --
+    the actual roads that matter are only ever within QUERY_RADIUS_M of a point, so a
+    narrow corridor around the points themselves is a much tighter osmium extract."""
+    geom = MultiPoint([(lon, lat) for lat, lon in points]).buffer(CORRIDOR_BUFFER_DEG, quad_segs=4)
+    return geom.simplify(CORRIDOR_SIMPLIFY_DEG, preserve_topology=True)
+
+
+def ensure_region_extract(cache_dir, region, on_progress=None):
+    """Returns the local path to region['id']'s .osm.pbf under cache_dir,
+    downloading it from region['pbf_url'] first if not already present. Never
+    re-downloaded once cached -- a personal archive of already-completed trips
+    doesn't need the road network under them to stay "live". on_progress is
+    passed through to _download_with_retry (see there)."""
+    path = cache_dir / f"{region['id']}.osm.pbf"
+    if path.exists():
+        return path
+    tmp_path = path.with_name(path.name + ".tmp")
+    _download_with_retry(region["pbf_url"], tmp_path, on_progress=on_progress)
+    tmp_path.replace(path)
+    return path
+
+
+def pyrosm_gdf_to_ways(gdf):
+    """Converts a pyrosm GeoDataFrame (from get_data_by_custom_criteria with the
+    highway filter) into the same [{"id", "tags", "geometry": [(lat, lon), ...]}]
+    shape the old Overpass fetch produced. A way's geometry can come back as a
+    LineString, a MultiLineString, or (for closed ways like a highway=pedestrian
+    plaza) a Polygon -- each part becomes its own ways-entry sharing the row's
+    id/tags; build_way_index doesn't care about duplicate ids."""
+    ways = []
+    for row in gdf.itertuples():
+        tags = {"surface": None if row.surface != row.surface else row.surface,
+                "highway": None if row.highway != row.highway else row.highway}
+        geom = row.geometry
+        if geom.geom_type == "LineString":
+            lines = [geom]
+        elif geom.geom_type == "MultiLineString":
+            lines = list(geom.geoms)
+        elif geom.geom_type == "Polygon":
+            lines = [geom.exterior]
+        else:
+            continue
+        for line in lines:
+            ways.append({
+                "id": row.id,
+                "tags": tags,
+                "geometry": [(lat, lon) for lon, lat in line.coords],
+            })
     return ways
 
 
-def _tile_cache_path(cache_dir, tile):
-    return cache_dir / f"{tile[0]}_{tile[1]}.json"
+class Spinner:
+    """One indented row: "  {spinner} {label} {progress}" while running, redrawn
+    in place as progress (set via update()) changes; on __exit__ the spinner is
+    replaced with a checkmark and the row is finalized, e.g. "  ✓ {label} {progress}"
+    (or done()'s final_text instead of label/progress, if given)."""
+
+    _FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    _MAX_WIDTH = 0  # widest row drawn so far this process, so later \r redraws fully erase it
+
+    def __init__(self, label):
+        self.label = label
+        self.progress = ""
+        self.final = None
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._spin, daemon=True)
+
+    def __enter__(self):
+        self._draw(self._FRAMES[0])
+        self._thread.start()
+        return self
+
+    def update(self, progress):
+        self.progress = progress
+
+    def done(self, final_text):
+        self.final = final_text
+
+    def _row(self, marker):
+        text = self.final if self.final is not None else self.label
+        progress = "" if self.final is not None else self.progress
+        return f"  {marker} {text}" + (f" {progress}" if progress else "")
+
+    def _draw(self, marker):
+        row = self._row(marker)
+        Spinner._MAX_WIDTH = max(Spinner._MAX_WIDTH, len(row))
+        sys.stdout.write("\r" + row.ljust(Spinner._MAX_WIDTH))
+        sys.stdout.flush()
+
+    def __exit__(self, *exc_info):
+        self._stop.set()
+        self._thread.join()
+        self._draw("✓")
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+
+    def _spin(self):
+        for ch in itertools.cycle(self._FRAMES):
+            if self._stop.is_set():
+                break
+            self._draw(ch)
+            time.sleep(0.1)
 
 
-def _fetch_tile_with_retry(tile):
-    """Runs in a worker thread -- no cache/disk access here, just the
-    network call, so cache writes stay single-threaded (in the caller)."""
-    for attempt in range(4):
-        try:
-            ways = fetch_tile_ways(tile)
-            return ways
-        except Exception as e:
-            remaining = ", retrying in 10s..." if attempt < 3 else ", giving up"
-            print(f"    tile {tile} query failed ({e}){remaining}")
-            if attempt < 3:
-                time.sleep(10)
-    return []
+def _geom_hash(geom):
+    """Short, stable id for a (Multi)Polygon, used to key cached corridor-extracts/
+    way-lists so a trip's cache is invalidated automatically if its region's
+    corridor ever changes."""
+    return hashlib.sha1(geom.wkb).hexdigest()[:10]
 
 
-def fetch_ways_for_tiles(cache_dir, tiles):
-    """Fetches (or loads from the on-disk cache) every tile in `tiles`,
-    deduping ways by their OSM id -- a way straddling a tile boundary comes
-    back from more than one tile's query. Cached tiles are loaded up front,
-    sequentially (fast, no network); only genuine cache misses go out to
-    Overpass, and those go out TILE_FETCH_WORKERS at a time -- with dozens or
-    hundreds of tiles to fetch, network latency (not local CPU) is the
-    bottleneck on a cold cache, so a modest amount of concurrency is a real
-    speedup without hammering the shared instance much harder than the old
-    sequential-with-retries approach did."""
-    sorted_tiles = sorted(tiles)
-    ways_by_id = {}
-    to_fetch = []
-    for tile in sorted_tiles:
-        path = _tile_cache_path(cache_dir, tile)
-        if path.exists():
-            for way in json.loads(path.read_text(encoding="utf-8")):
-                ways_by_id[way["id"]] = way
+def extract_corridor_with_osmium(cache_dir, region_id, src_path, corridor):
+    """Carves src_path down to just the `corridor` (Multi)Polygon using the `osmium`
+    CLI (osmium-tool), caching the result at cache_dir/{region_id}-{geom_hash}.osm.pbf.
+    `osmium extract` streams the file in a couple of passes with a small constant
+    memory footprint and only writes out matching ways (plus every node/relation they
+    need), so the later pyrosm parse runs against a few-MB file instead of the whole
+    country -- much faster and lower peak memory than pyrosm's out_of_core engine
+    scanning the original file itself, and (unlike a plain bbox) small even for a trip
+    that crosses most of a country's bbox, since only a narrow route corridor is kept.
+    Returns None (caller should fall back to src_path/bbox) if the `osmium` binary
+    isn't installed."""
+    if shutil.which("osmium") is None:
+        return None
+    geom_hash = _geom_hash(corridor)
+    out_path = cache_dir / f"{region_id}-{geom_hash}.osm.pbf"
+    if out_path.exists():
+        return out_path
+    geojson_path = cache_dir / f"{region_id}-{geom_hash}.geojson"
+    if not geojson_path.exists():
+        feature = {"type": "Feature", "properties": {}, "geometry": shapely_mapping(corridor)}
+        geojson_path.write_text(json.dumps(feature), encoding="utf-8")
+    tmp_path = out_path.with_name(out_path.name + ".tmp")
+    subprocess.run(
+        ["osmium", "extract", "--overwrite", "--strategy", "smart",
+         "--polygon", str(geojson_path),
+         "-f", "pbf", "-o", str(tmp_path), str(src_path)],
+        check=True, capture_output=True,
+    )
+    tmp_path.replace(out_path)
+    return out_path
+
+
+def load_ways_for_regions(cache_dir, region_by_id, region_points):
+    """Downloads (if needed) and reads every highway=* way from each region in
+    region_points, merging them into one flat list. Each region is restricted to a
+    narrow corridor around its trip points (see region_corridor_from_points) --
+    required for whole-country regions like Austria, where even a bbox around the
+    trip's points can span nearly the whole country (e.g. a trip through the Alps)
+    and parsing/extracting that whole area can exhaust RAM even though the roads
+    that matter are only ever within QUERY_RADIUS_M of a point. Cross-region
+    duplicate way ids near a shared border are harmless for build_way_index/
+    nearest_way_tags.
+
+    Two cache layers avoid repeating that work on reruns with the same trips:
+    - a small corridor-carved .osm.pbf per region (see extract_corridor_with_osmium)
+    - the fully-extracted way list itself, as JSON, keyed by region+corridor"""
+    ways = []
+    for region_id in sorted(region_points):
+        region = region_by_id[region_id]
+        points = region_points[region_id]
+        corridor = region_corridor_from_points(points)
+        pbf_name = f"{region_id}.osm.pbf"
+        print(pbf_name)
+
+        ways_cache_path = cache_dir / f"{region_id}-{_geom_hash(corridor)}-ways.json"
+        if ways_cache_path.exists():
+            region_ways = json.loads(ways_cache_path.read_text(encoding="utf-8"))
+            print(f"  ✓ found {len(region_ways)} ways (cached)")
+            ways.extend(region_ways)
+            continue
+
+        with Spinner("downloading") as sp:
+            path = ensure_region_extract(cache_dir, region, on_progress=sp.update)
+            size_mb = path.stat().st_size / (1024 * 1024)
+            sp.done(f"downloaded {size_mb:.0f} MB")
+
+        with Spinner("restricting to route corridor") as sp:
+            corridor_path = extract_corridor_with_osmium(cache_dir, region_id, path, corridor)
+            if corridor_path is not None:
+                corridor_mb = corridor_path.stat().st_size / (1024 * 1024)
+                sp.done(f"carved corridor ({corridor_mb:.0f} MB)")
+            else:
+                sp.done("osmium not found, will restrict via pyrosm bbox instead")
+
+        if corridor_path is not None:
+            # already carved down to the corridor -- no need to make pyrosm redo it,
+            # and the small file lets us use the faster "in_memory" engine.
+            osm = pyrosm.OSM(str(corridor_path))
         else:
-            to_fetch.append(tile)
+            # out_of_core: decodes blobs in parallel across CPU cores and spills to disk
+            # per worker instead of holding the whole file in memory -- faster and lower
+            # peak memory than the default "in_memory" engine for a country-sized .osm.pbf.
+            # workers="auto" spawns one decoder per CPU core, each holding its decoded
+            # chunk of the whole-country file in RAM at once -- on many-core machines
+            # that multiplies peak memory past what out_of_core is meant to save and
+            # can OOM the box, so cap it instead of trusting "auto". This fallback still
+            # only narrows to the trip's bbox, not the corridor, so it can still be much
+            # larger (and OOM) for a trip that crosses most of a whole-country region.
+            bbox = region_bbox_from_points(points)
+            osm = pyrosm.OSM(str(path), bounding_box=list(bbox), engine="out_of_core", workers=4)
 
-    print(f"  {len(sorted_tiles) - len(to_fetch)}/{len(sorted_tiles)} tile(s) already cached; "
-          f"fetching {len(to_fetch)} from Overpass ({TILE_FETCH_WORKERS} at a time)...")
+        with Spinner("extracting highway ways") as sp:
+            gdf = osm.get_data_by_custom_criteria(
+                custom_filter={"highway": True}, filter_type="keep",
+                keep_nodes=False, keep_ways=True, keep_relations=False,
+                extra_attributes=["surface"],
+            )
+            row_count = 0 if gdf is None else len(gdf)
+            sp.done(f"extracted {row_count} rows")
 
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    done = 0
-    with concurrent.futures.ThreadPoolExecutor(max_workers=TILE_FETCH_WORKERS) as pool:
-        futures = {pool.submit(_fetch_tile_with_retry, tile): tile for tile in to_fetch}
-        for future in concurrent.futures.as_completed(futures):
-            tile = futures[future]
-            ways = future.result()
-            done += 1
-            print(f"  tile {done}/{len(to_fetch)} {tile}: {len(ways)} way(s)")
-            for way in ways:
-                ways_by_id[way["id"]] = way
-
-            path = _tile_cache_path(cache_dir, tile)
-            tmp_path = path.with_suffix(".json.tmp")
-            tmp_path.write_text(json.dumps(ways), encoding="utf-8")
-            tmp_path.replace(path)  # atomic, same reasoning as the final trips.json write
-
-    return list(ways_by_id.values())
+        with Spinner("converting to way list") as sp:
+            region_ways = pyrosm_gdf_to_ways(gdf) if gdf is not None else []
+            sp.done(f"found {len(region_ways)} ways")
+        ways_cache_path.write_text(json.dumps(region_ways), encoding="utf-8")
+        ways.extend(region_ways)
+    return ways
 
 
 def build_way_index(ways):
@@ -341,10 +673,10 @@ def parse_activity_and_desc(desc_raw, emoji, trip_default_activity=None):
 
 
 def parse_track_raw(trk, trip_default_activity=None):
-    """Everything about a track except surface/highway, which needs the OSM
-    tiles covering *every* trip in this build to have been fetched first
-    (see collect_tiles/fetch_ways_for_tiles in main) -- see finish_track for
-    the second pass that adds it and finishes the track."""
+    """Everything about a track except surface/highway, which needs the Geofabrik
+    region extracts covering *every* trip in this build to have been fetched first
+    (see collect_region_points/load_ways_for_regions in main) -- see
+    finish_track for the second pass that adds it and finishes the track."""
     name_raw = tag(trk, "name") or "Untitled"
     parts = name_raw.split(" ", 1)
     if len(parts) == 2 and not parts[0].isalnum():
@@ -467,7 +799,7 @@ def parse_wpt(wpt):
 def build_trip_raw(gpx_path, trip_id):
     """First pass: everything about a trip except surface/highway -- see
     finish_trip for the second pass, once the global tile index is ready."""
-    print(f"Reading {gpx_path} ...")
+    print(f"  {gpx_path.name}")
     tree = ET.parse(gpx_path)
     root = tree.getroot()
 
@@ -499,17 +831,6 @@ def build_trip_raw(gpx_path, trip_id):
         "id": trip_id, "name": trip_name, "gpx_path": gpx_path,
         "tracks_raw": tracks_raw, "pois": pois,
     }
-
-
-def collect_tiles(trips_raw):
-    """The minimum set of OSM tiles that together cover every point of
-    every trip being built."""
-    tiles = set()
-    for trip_raw in trips_raw:
-        for track_raw in trip_raw["tracks_raw"]:
-            for p in track_raw["raw_points"]:
-                tiles.add(tile_key(p["lat"], p["lon"]))
-    return tiles
 
 
 def finish_trip(trip_raw, ways, index, trip_idx, presence_index):
@@ -576,13 +897,26 @@ def main():
             print(f"No .gpx files found in {project_dir / 'data'}.")
             sys.exit(1)
 
+    print(f"Reading files in {project_dir / 'data'}")
     trips_raw = [build_trip_raw(p, f"trip-{i + 1}") for i, p in enumerate(gpx_paths)]
 
-    tiles = collect_tiles(trips_raw)
-    cache_dir = project_dir / "data" / ".osm_tiles"
-    print(f"\n{len(tiles)} OSM tile(s) cover every trip above (cached ones are instant, others query Overpass once each):")
-    ways = fetch_ways_for_tiles(cache_dir, tiles)
-    print(f"  {len(ways)} way(s) total; building spatial index...\n")
+    extract_cache_dir = project_dir / "data" / ".osm_extracts"
+    catalog = load_region_catalog(extract_cache_dir)
+    strtree, polygon_by_geom_id, region_by_id = build_leaf_region_index(catalog)
+    region_points = collect_region_points(trips_raw, strtree, polygon_by_geom_id)
+    print(f"\n{len(region_points)} Geofabrik region(s) cover every trip above "
+          f"(cached extracts are instant, only new ones are downloaded):")
+    for region_id in sorted(region_points):
+        extract_path = extract_cache_dir / f"{region_id}.osm.pbf"
+        if extract_path.exists():
+            size = f"{extract_path.stat().st_size / (1024 * 1024):.0f} MB cached"
+        else:
+            expected_mb = _remote_content_length_mb(region_by_id[region_id]["pbf_url"])
+            size = f"not yet downloaded, ~{expected_mb:.0f} MB" if expected_mb else "not yet downloaded"
+        print(f"  {extract_path.name} ({size})")
+    print()
+    ways = load_ways_for_regions(extract_cache_dir, region_by_id, region_points)
+    print(f"\nFound {len(ways)} ways total; building spatial index:\n")
     index = build_way_index(ways)
 
     presence_index = build_trip_presence_index([

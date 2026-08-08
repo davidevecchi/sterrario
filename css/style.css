@@ -980,14 +980,91 @@ body {
   background-position: center;
 }
 
-/* Recolor the default marker-cluster palette to match the trip palette. */
-.marker-cluster-small { background-color: rgba(185, 154, 94, 0.55); }
-.marker-cluster-small div { background-color: rgba(185, 154, 94, 0.85); }
-.marker-cluster-medium { background-color: rgba(185, 132, 15, 0.55); }
-.marker-cluster-medium div { background-color: rgba(185, 132, 15, 0.85); }
-.marker-cluster-large { background-color: rgba(161, 62, 28, 0.55); }
-.marker-cluster-large div { background-color: rgba(161, 62, 28, 0.85); }
-.marker-cluster span { color: #fff; font-family: var(--font-display); font-weight: 600; }
+/* Unified priority cluster marker (see combinedClusterIcon/buildTripClusters
+   in main.js) -- shown instead of a plain .trip-marker/.poi-marker whenever
+   a cluster absorbed at least one photo within 30m real-world distance of
+   a day-start sign and/or a POI. Reuses .photo-divicon as the base (same
+   44x44 circular thumbnail of the cluster's earliest photo) and layers a
+   colored/plain stroke, an optional day-number notch, and an optional
+   photo-count badge on top -- all three purely decorative, so (like
+   .trip-marker's own scale-on-hover children) they get pointer-events:none
+   to keep hover/click hit-testing on the marker's own outer icon box. */
+/* No position here: this class lands on the same element as Leaflet's own
+   .leaflet-marker-icon (position: absolute, from leaflet.css), which is
+   what Leaflet's transform-based marker placement depends on -- redeclaring
+   position here (even to "relative") would win on source order and silently
+   break every cluster marker's positioning. */
+.cluster-marker { width: 44px; height: 44px; }
+.cluster-marker > div { position: relative; width: 100%; height: 100%; }
+
+/* Trip-colored ring: this cluster also absorbed a POI (with or without a
+   day-start too) -- .photo-divicon's own neutral border-strong ring is
+   overridden with the trip's own identity color instead. */
+.cluster-photo-thumb {
+  box-shadow: 0 0 0 3px var(--marker-color), 2px 2px 4px var(--shadow-color);
+}
+/* Plain white ring: no POI in this cluster (a lone start+photo cluster, or
+   a pure leftover-photo cluster with no start/POI at all) -- reuses
+   --sign-white, the same "plain white stroke" token the POI signpost uses. */
+.cluster-photo-thumb-plain {
+  box-shadow: 0 0 0 3px var(--sign-white), 2px 2px 4px var(--shadow-color);
+}
+
+/* Day-number notch, shown only when the cluster is anchored to a day-start
+   sign -- a small rounded-square badge in the trip's color sitting over the
+   thumbnail's top-left corner, reusing the same "border-radius: 50% 50% 50%
+   0" single-sharp-corner trick as .trip-marker-square-outer. */
+.cluster-notch {
+  position: absolute;
+  top: -6px; left: -6px;
+  width: 20px; height: 20px;
+  pointer-events: none;
+  z-index: 1;
+}
+.cluster-notch-shape {
+  position: absolute;
+  inset: 0;
+  border-radius: 50% 50% 50% 0;
+  background: var(--marker-color);
+  transform: rotate(-45deg);
+  box-shadow: 1px 1px 0 var(--shadow-color);
+  pointer-events: none;
+}
+.cluster-notch-label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 10px;
+  color: var(--sign-white);
+  pointer-events: none;
+}
+
+/* Photo-count badge, shown only when the cluster absorbed more than one
+   photo -- a small dark circular badge over the thumbnail's bottom-right
+   corner. Deliberately its own new markup/CSS, not leaflet.markercluster's
+   generated marker-cluster DOM, which this whole feature replaces. */
+.cluster-count-badge {
+  position: absolute;
+  bottom: -4px; right: -4px;
+  min-width: 16px; height: 16px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: var(--sign-ink);
+  color: var(--sign-white);
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 1px 1px 0 var(--shadow-color);
+  pointer-events: none;
+  z-index: 1;
+}
 
 #photoLightbox {
   position: fixed;
@@ -1064,7 +1141,8 @@ body {
   cursor: pointer;
 }
 #photoLightboxPrev.hidden, #photoLightboxNext.hidden {
-  display: none;
+  opacity: 0;
+  pointer-events: none;
 }
 
 #photoPresentation {
@@ -1128,7 +1206,7 @@ body {
 #photoPresentationPrev:hover,
 #photoPresentationNext:hover { color: #fff; }
 #photoPresentationPrev.hidden,
-#photoPresentationNext.hidden { display: none; }
+#photoPresentationNext.hidden { opacity: 0; pointer-events: none; }
 
 #photoPresentation.panorama {
   overflow-x: auto;

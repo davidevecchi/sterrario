@@ -60,9 +60,14 @@ python3 scripts/build_trips.py
 (Or pass specific file paths to process only those: `python3
 scripts/build_trips.py /path/to/a.gpx /path/to/b.gpx`.)
 
-This needs only Python 3 (already included on macOS/Linux; on Windows,
-install it from python.org) — no extra packages to install. It overwrites
-`data/.generated/trips.json`. Refresh the page afterwards.
+This needs Python 3 (already included on macOS/Linux; on Windows, install it
+from python.org) plus the packages in `requirements.txt` (used to read local
+OpenStreetMap map data for surface/road-type info), installed once from the
+repo root with:
+```
+pip install -r requirements.txt
+```
+It overwrites `data/.generated/trips.json`. Refresh the page afterwards.
 
 ## Adding photos
 
@@ -76,10 +81,8 @@ install it from python.org) — no extra packages to install. It overwrites
    ```
    python3 scripts/build_photos.py
    ```
-   This needs Python 3 plus Pillow, installed once with:
-   ```
-   pip install pillow
-   ```
+   This needs Python 3 plus the packages in `requirements.txt` (see above) —
+   `pip install -r requirements.txt` if you haven't already.
 3. Refresh the page. A "Foto" section appears in the sidebar with a count and
    a checkbox to show the photos on the map.
 
