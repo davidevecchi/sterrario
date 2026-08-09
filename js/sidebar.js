@@ -240,10 +240,27 @@ function legendItemRows(items, { sortByPct = true, dropZero = true } = {}) {
 // legends stacked). This is only ever fed the Esplora-dati panel's own
 // exploreLegendMode -- never state.colorMode -- so browsing this legend
 // never touches the map/chart's real color mode (see switchColorMode).
+// The Esplora-dati legend always breaks down whatever's currently
+// selected -- the one active day, the active trip's tracks, or (nothing
+// selected) every track on the map -- rather than always the full map, so
+// its percentages match what the halo/dimming is actually pointing at.
+function exploreScopeTracks() {
+  if (state.activeDayId) {
+    const trip = state.tripById[state.activeTripId];
+    const track = trip && trip.tracks.find(t => t.id === state.activeDayId);
+    if (track) return [track];
+  } else if (state.activeTripId) {
+    const trip = state.tripById[state.activeTripId];
+    if (trip) return trip.tracks;
+  }
+  return visibleTracks();
+}
+
 function renderLegend(mode) {
   const el = document.getElementById("modeLegend");
+  el.classList.toggle("legend-readonly", !state.activeTripId);
 
-  const tracks = visibleTracks();
+  const tracks = exploreScopeTracks();
 
   if (mode === "trip") {
     const activityPct = categoryPercents(tracks, track => track.activity || "other");
@@ -284,6 +301,14 @@ function renderLegend(mode) {
     : mode === "highway" ? highwayHtml
     : mode === "gradient" ? gradientHtml
     : surfaceHtml + highwayHtml + gradientHtml;
+
+  // setMapLegendHover always overlays the match across every visible
+  // track (see chart.js), which only reads as "this category, within the
+  // current selection" once a trip is actually selected -- at the "all
+  // trips" level there's no selection for it to scope to, so skip wiring
+  // the click there entirely rather than showing a highlight that doesn't
+  // correspond to anything.
+  if (!state.activeTripId) return;
 
   el.querySelectorAll(".legend-item").forEach(item => {
     item.addEventListener("click", () => {

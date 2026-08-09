@@ -1,0 +1,72 @@
+@font-face {
+  font-family: "Jost";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("fonts/jost-500.woff2") format("woff2");
+}
+
+:root {
+  color-scheme: light;
+  /* Wes Anderson-ish outdoor/expedition palette: parchment, rust, brass, teal
+     -- deeper/richer variant, less pale than a typical "light mode" */
+  --bg: #e9dab3;
+  --bg-alt: #ddc794;
+  --bg-panel: #f1e4c4;
+  --border: #b99a5e;
+  --border-strong: #8a6530;
+  --text: #241a12;
+  --text-muted: #6b5636;
+  --accent: #a13e1c;
+  --accent-ink: #ffffff;
+  --accent-2: #1f4d47;
+  --mustard: #b9840f;
+  --shadow-color: rgba(36, 26, 18, 0.45);
+
+  /* Alpine trail-signpost accents (segnavia CAI): white board, red trim, black ink --
+     used only on literal "waymarking" UI: POI pins and the POI card's nav arrows. */
+  --sign-white: #f7f2e4;
+  --sign-red: #ab2328;
+  --sign-ink: #1c1712;
+  --tile-green: #556b2f;
+
+  --font-display: "Jost", "Futura", "Century Gothic", Avenir, sans-serif;
+  --font-body: "Avenir Next", Avenir, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+
+  --sidebar-w: 360px;
+  --topbar-h: 52px;
+  --elevation-h: 240px;
+  --elevation-h-collapsed: 40px;
+}
+
+/* Always light: this viewer intentionally does not follow the visitor's
+   system dark-mode preference. A manual override still exists below
+   (data-theme="dark") in case it's wired up later. */
+:root[data-theme="dark"] {
+  --bg: #241b15;
+  --bg-alt: #2c2118;
+  --bg-panel: #33271c;
+  --border: #5a4632;
+  --border-strong: #7a5f40;
+  --text: #ecdfc4;
+  --text-muted: #ab967a;
+  --accent: #e0793f;
+  --accent-2: #6fae9f;
+  --mustard: #e3ac3d;
+  --shadow-color: rgba(0, 0, 0, 0.5);
+  --tile-green: #7a9457;
+}
+:root[data-theme="light"] {
+  --bg: #e9dab3;
+  --bg-alt: #ddc794;
+  --bg-panel: #f1e4c4;
+  --border: #b99a5e;
+  --border-strong: #8a6530;
+  --text: #241a12;
+  --text-muted: #6b5636;
+  --accent: #a13e1c;
+  --accent-2: #1f4d47;
+  --mustard: #b9840f;
+  --shadow-color: rgba(36, 26, 18, 0.45);
+  --tile-green: #556b2f;
+}

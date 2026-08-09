@@ -4,7 +4,7 @@ import { state } from "./state.js";
 import { loadTrips, loadPhotos } from "./data.js";
 import { assignTripColors } from "./colors.js";
 import {
-  initMap, buildDayLayers, trackStartDots, tripTrackDrawOrder, recenterMap, recomputeOffsetLines,
+  initMap, buildDayLayers, buildStartDotLayers, startDotId, tripTrackDrawOrder, recenterMap, recomputeOffsetLines,
 } from "./map-layers.js";
 import { buildTripClusterLayer, updateClusterVisibility } from "./clusters.js";
 import { renderExploreLegend, setExploreLegendMode, TRIP_SORT_DEFAULT_DIR, TRACK_SORT_DEFAULT_DIR, renderPicker, showAllTripsFooter } from "./sidebar.js";
@@ -375,7 +375,6 @@ async function main() {
   Object.values(photosByTrip).forEach(list => list.sort((a, b) => (a.t || "").localeCompare(b.t || "")));
   state.photosByTrip = photosByTrip;
 
-  let startDots = [];
   trips.forEach(trip => {
     tripTrackDrawOrder(trip).forEach(track => {
       const layers = buildDayLayers(trip, track);
@@ -383,7 +382,15 @@ async function main() {
       layers.day.addTo(map);
     });
     buildTripClusterLayer(trip, photosByTrip[trip.id] || []);
-    startDots = startDots.concat(trackStartDots(trip));
+  });
+  // Start dots are added in a second pass, after every trip's tracks, so
+  // they render on top of every track/casing regardless of trip order.
+  trips.forEach(trip => {
+    trip.tracks.forEach(track => {
+      const layers = buildStartDotLayers(trip, track);
+      state.dayLayers[startDotId(track.id)] = layers;
+      layers.day.addTo(map);
+    });
   });
 
   renderExploreLegend();
@@ -403,11 +410,8 @@ async function main() {
     map.setView([46, 11], 10);
   }
   // The map has no zoom until the first setView/fitBounds above -- now
-  // that it does, position every shared-route offset line for real, and
-  // it's finally safe to add the per-day start dots (Leaflet's Path
-  // renderer throws if a circleMarker is added before the map has one).
+  // that it does, position every shared-route offset line for real.
   recomputeOffsetLines();
-  L.layerGroup(startDots).addTo(map);
 }
 
 main();

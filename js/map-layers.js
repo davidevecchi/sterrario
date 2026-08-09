@@ -155,12 +155,6 @@ export function initMap() {
   // own markerPane (600)/tooltipPane (650) sidesteps DOM order entirely.
   // pointerEvents: none keeps the marker from stealing mousemove/mouseout
   // from whatever track hit-line is under the cursor.
-  // A pane above the track/casing overlayPane (400) but below Leaflet's
-  // markerPane (600) -- keeps the track start dots always on top of lines
-  // but under every icon/POI/boundary marker.
-  map.createPane("trackDotsPane");
-  map.getPane("trackDotsPane").style.zIndex = 450;
-  map.getPane("trackDotsPane").style.pointerEvents = "none";
   map.createPane("hoverPointPane");
   map.getPane("hoverPointPane").style.zIndex = 675;
   map.getPane("hoverPointPane").style.pointerEvents = "none";
@@ -190,33 +184,44 @@ export function buildSegmentGroup(trip, track, mode) {
   const surfaces = mode === "surface" ? trackCategorySeries(track, "surface") : null;
   const highways = mode === "highway" ? trackCategorySeries(track, "highway") : null;
   const group = L.layerGroup();
-  const segments = [];
-  for (let i = 1; i < track.points.length; i++) {
-    const prev = track.points[i - 1];
-    const cur = track.points[i];
-    const color = segmentColorForMode(
-      mode,
-      surfaces ? surfaces[i - 1] : undefined,
-      highways ? highways[i - 1] : undefined,
-      grades ? grades[i - 1] : undefined
-    );
-    segments.push({ prev, cur, color, latlngs: [[prev.lat, prev.lon], [cur.lat, cur.lon]] });
+  const points = track.points;
+  const colorAt = (i) => segmentColorForMode(
+    mode,
+    surfaces ? surfaces[i] : undefined,
+    highways ? highways[i] : undefined,
+    grades ? grades[i] : undefined
+  );
+  // Consecutive point-to-point segments sharing the same color are merged
+  // into one multi-point polyline instead of one polyline per pair -- a
+  // trip-wide coloring can otherwise mean thousands of individual Leaflet
+  // layers (casing+colored+hit-line each), which gets laggish fast. Color
+  // only changes where surface/highway/grade-bucket actually changes, so
+  // this is normally a small fraction of the raw point count.
+  const runs = [];
+  for (let i = 1; i < points.length; i++) {
+    const color = colorAt(i - 1);
+    const run = runs[runs.length - 1];
+    if (run && run.color === color) run.end = i;
+    else runs.push({ color, start: i - 1, end: i });
   }
-  segments.forEach(s => {
-    group.addLayer(L.polyline(s.latlngs, { color: "#f7f2e4", weight: TRACK_CASING_WEIGHT, opacity: 0.9 }));
+  const runLatLngs = (run) => points.slice(run.start, run.end + 1).map(p => [p.lat, p.lon]);
+  runs.forEach(run => {
+    group.addLayer(L.polyline(runLatLngs(run), { color: "#f7f2e4", weight: TRACK_CASING_WEIGHT, opacity: 1, lineCap: "butt" }));
   });
-  for (let i = segments.length - 1; i >= 0; i--) {
-    const s = segments[i];
-    const seg = L.polyline(s.latlngs, { color: s.color, weight: TRACK_WEIGHT, opacity: 0.9 });
+  for (let i = runs.length - 1; i >= 0; i--) {
+    const run = runs[i];
+    const seg = L.polyline(runLatLngs(run), { color: run.color, weight: TRACK_WEIGHT, opacity: 1, lineCap: "butt" });
     seg._trackLineWeight = TRACK_WEIGHT;
     group.addLayer(seg);
   }
-  segments.forEach(s => {
-    const hitLine = L.polyline(s.latlngs, { color: "#000", weight: TRACK_HIT_WEIGHT, opacity: 0 });
-    hitLine._isHitLine = true;
-    attachTrackHandlers(hitLine, trip, track, [s.prev, s.cur]);
-    group.addLayer(hitLine);
-  });
+  // One hit-line for the whole track (matching buildDayLayers' per-run
+  // approach) rather than one per point-pair -- hover/click granularity
+  // comes from the mousemove handler's closest-point lookup, not from the
+  // hit-line being split, so this loses nothing there.
+  const hitLine = L.polyline(points.map(p => [p.lat, p.lon]), { color: "#000", weight: TRACK_HIT_WEIGHT, opacity: 0 });
+  hitLine._isHitLine = true;
+  attachTrackHandlers(hitLine, trip, track, points);
+  group.addLayer(hitLine);
   return group;
 }
 
@@ -303,9 +308,9 @@ export function buildDayLayers(trip, track) {
     // activity -- it reads as a continuous colored-dash "tube" rather than
     // a broken line, so the track is always easy to follow at a glance.
     if (!run.shared) {
-      const casing = L.polyline(latlngs, { color: "#f7f2e4", weight: TRACK_CASING_WEIGHT, opacity: 0.9 });
+      const casing = L.polyline(latlngs, { color: "#f7f2e4", weight: TRACK_CASING_WEIGHT, opacity: 1 });
       const line = L.polyline(latlngs, {
-        color: trip._color, weight: TRACK_WEIGHT, opacity: 0.9,
+        color: trip._color, weight: TRACK_WEIGHT, opacity: 1,
         dashArray: ACTIVITY_DASH[track.activity] || null,
       });
       line._trackLineWeight = TRACK_WEIGHT;
@@ -322,9 +327,9 @@ export function buildDayLayers(trip, track) {
       // directly over the other trip's line for the same road/path -- the
       // shared casing is drawn a bit wider to comfortably underlie every
       // trip's offset line here, not just this one.
-      const casing = L.polyline(latlngs, { color: "#f7f2e4", weight: SHARED_CASING_WEIGHT, opacity: 0.9 });
+      const casing = L.polyline(latlngs, { color: "#f7f2e4", weight: SHARED_CASING_WEIGHT, opacity: 1 });
       const line = L.polyline(latlngs, {
-        color: trip._color, weight: SHARED_LANE_WEIGHT, opacity: 0.95,
+        color: trip._color, weight: SHARED_LANE_WEIGHT, opacity: 1,
         dashArray: ACTIVITY_DASH[track.activity] || null,
       });
       line._trackLineWeight = SHARED_LANE_WEIGHT;
@@ -405,11 +410,10 @@ export function currentModeForTrack(trackId) {
   return (layers && layers._currentMode) || "trip";
 }
 
-// Only the specifically selected day (same scope as chartedTrackIds/the
-// selection halo) ever shows the surface/highway/gradient coloring; every
-// other track -- including the rest of a trip selected without a day --
-// always stays in its own trip's identity color, no matter what
-// "Colora tracce per" is set to.
+// Only the charted track(s) (see chartedTrackIds -- the selected day, or
+// every day of the selected trip if no single day is picked) ever show the
+// surface/highway/gradient coloring; every other track always stays in its
+// own trip's identity color, no matter what "Colora tracce per" is set to.
 export function applyColorMode() {
   const charted = new Set(chartedTrackIds());
   Object.keys(state.dayLayers).forEach(trackId => {
@@ -459,7 +463,12 @@ export function recenterMap() {
 // no forced color-mode coloring, same as the default "nothing selected"
 // view.
 export function chartedTrackIds() {
-  return state.activeDayId ? [state.activeDayId] : [];
+  if (state.activeDayId) return [state.activeDayId];
+  if (state.activeTripId) {
+    const trip = state.tripById[state.activeTripId];
+    return trip ? trip.tracks.map(t => t.id) : [];
+  }
+  return [];
 }
 
 // The track(s) that stay full-opacity (everything else dims): the whole
@@ -467,7 +476,7 @@ export function chartedTrackIds() {
 export function dimmedTrackIds() {
   if (!state.activeTripId) return [];
   const trip = state.tripById[state.activeTripId];
-  return trip ? trip.tracks.map(t => t.id) : [];
+  return trip ? [].concat(...trip.tracks.map(t => [t.id, startDotId(t.id)])) : [];
 }
 
 // Shared white halo builder for both the persistent selection highlight
@@ -488,19 +497,33 @@ function trackHaloLayer(trackId, weight) {
   });
 }
 
-export function updateSelectionHighlight() {
+// Shared by the persistent selection halo and the transient hover-narrowed
+// halo below -- draws exactly one halo per given track id.
+function renderSelectionHalo(ids) {
   if (!state.selectionHighlight) state.selectionHighlight = L.layerGroup().addTo(state.map);
   state.selectionHighlight.clearLayers();
-  chartedTrackIds().forEach(trackId => {
+  ids.forEach(trackId => {
     const halo = trackHaloLayer(trackId, SELECTION_HIGHLIGHT_WEIGHT);
     if (halo) halo.addTo(state.selectionHighlight);
   });
+}
+
+export function updateSelectionHighlight() {
+  renderSelectionHalo(chartedTrackIds());
   // A click that changes the selection can fire while the cursor is still
   // sitting on the hit-line it just selected -- clear any stale hover
   // halo so it doesn't linger under/alongside the new selection halo.
   clearTrackHoverHighlight();
   updateTrackDimming();
-  updateDotWeights();
+}
+
+// Which track id(s) currently get the "selected" halo/stroke treatment --
+// normally every charted track (see chartedTrackIds), but while hovering a
+// single track of a whole-trip selection (no day picked yet), narrowed down
+// to just the hovered one so the rest of the trip visibly steps back (see
+// showTrackHoverHighlight).
+function highlightedTrackIds() {
+  return state.hoveredTrackId ? [state.hoveredTrackId] : chartedTrackIds();
 }
 
 // Once a trip is active, every track outside it fades out so the active
@@ -513,11 +536,11 @@ export function updateSelectionHighlight() {
 export function updateTrackDimming() {
   const charted = new Set(dimmedTrackIds());
   const dimActive = charted.size > 0;
-  const selectedTrackId = state.activeDayId || null;
+  const selected = new Set(highlightedTrackIds());
   Object.keys(state.dayLayers).forEach(trackId => {
     const isCharted = !dimActive || charted.has(trackId);
     const opacity = isCharted ? FULL_TRACK_OPACITY : DIMMED_TRACK_OPACITY;
-    const isSelectedTrack = trackId === selectedTrackId;
+    const isSelectedTrack = selected.has(trackId);
     const group = groupForMode(trackId, currentModeForTrack(trackId));
     group.eachLayer(layer => {
       if (!layer.setStyle) return;
@@ -539,8 +562,6 @@ export function updateTrackDimming() {
       // hidden under an unrelated track it happens to cross.
       if (isCharted && dimActive && layer.bringToFront) layer.bringToFront();
     });
-    const dot = state.startDotByTrackId[trackId];
-    if (dot) dot.setStyle({ opacity: isCharted ? FULL_TRACK_OPACITY : DIMMED_TRACK_OPACITY / 2, fillOpacity: isCharted ? FULL_TRACK_OPACITY : DIMMED_TRACK_OPACITY / 2 });
   });
 }
 
@@ -550,6 +571,8 @@ export function updateTrackDimming() {
 function bringTrackToFront(trackId) {
   const group = groupForMode(trackId, currentModeForTrack(trackId));
   group.eachLayer(layer => { if (layer.bringToFront) layer.bringToFront(); });
+  const dotLayers = state.dayLayers[startDotId(trackId)];
+  if (dotLayers) dotLayers.day.eachLayer(layer => { if (layer.bringToFront) layer.bringToFront(); });
 }
 
 // A trip's tracks are always drawn oldest-day-on-top (so a later/further
@@ -591,23 +614,21 @@ export function poiRank(trip, poiIndex) {
 // Transient per-track halo shown only while hovering that track (any run
 // of it, or its casing) -- exactly the persistent selection's look, just
 // cleared on mouseout instead of sticking around.
-// Sets each dot's stroke weight to match its track's current halo state:
-// enlarged when the track has a selection or hover halo, resting otherwise.
-export function updateDotWeights(hoveredTrackIds = new Set()) {
-  const selected = new Set(chartedTrackIds());
-  Object.entries(state.startDotByTrackId).forEach(([trackId, dot]) => {
-    const hasHalo = selected.has(trackId) || hoveredTrackIds.has(trackId);
-    dot.setStyle({ weight: hasHalo ? 2 * (TRACK_CASING_WEIGHT - TRACK_WEIGHT) : 2 });
-  });
-}
-
 export function showTrackHoverHighlight(trackId) {
   if (!state.hoverHighlight) state.hoverHighlight = L.layerGroup().addTo(state.map);
   state.hoverHighlight.clearLayers();
   const halo = trackHaloLayer(trackId, SELECTION_HIGHLIGHT_WEIGHT);
   if (halo) halo.addTo(state.hoverHighlight);
   bringTrackToFront(trackId);
-  updateDotWeights(new Set([trackId]));
+  // When the whole trip is selected (no single day picked yet), every one
+  // of its tracks shares the persistent selection halo/stroke -- hovering
+  // one of them narrows that down to just the hovered track, so the rest
+  // of the trip visibly steps back instead of all staying highlighted.
+  if (state.activeTripId && !state.activeDayId) {
+    state.hoveredTrackId = trackId;
+    renderSelectionHalo([trackId]);
+    updateTrackDimming();
+  }
 }
 // Same, but for every track of a whole trip at once -- used when hovering
 // a track that isn't (yet) the active trip's own, so the halo previews
@@ -621,14 +642,17 @@ export function showTripHoverHighlight(tripId) {
     if (halo) halo.addTo(state.hoverHighlight);
     bringTrackToFront(track.id);
   });
-  updateDotWeights(new Set(state.tripById[tripId].tracks.map(t => t.id)));
 }
 export function clearTrackHoverHighlight() {
   if (state.hoverHighlight) state.hoverHighlight.clearLayers();
+  // Restore the full-trip halo narrowed by showTrackHoverHighlight, if any.
+  if (state.hoveredTrackId) {
+    state.hoveredTrackId = null;
+    renderSelectionHalo(chartedTrackIds());
+  }
   // Hovering briefly raised some other track above the current
   // selection -- once the hover ends, restore the selected trip/day back
   // on top.
-  updateDotWeights();
   updateTrackDimming();
 }
 
@@ -835,38 +859,26 @@ export function hideHoverTooltip() {
   }, HOVER_TOOLTIP_CLOSE_DELAY_MS);
 }
 
+// Virtual track id for a track's start-dot companion (see buildStartDotLayers).
+export function startDotId(trackId) {
+  return trackId + "-start";
+}
+
 // A plain dot at every track's own start (including day 1's, unlike the
-// per-day activity-start cluster markers above, which skip day 1) --
-// styled like the track itself, a
-// casing-ringed dot in the trip's color, so there's always a visible
-// anchor at each day's start even underneath the fancier icon pins.
-// Unlike the trip-boundary/activity-icon marker groups, these stay on the
-// map unconditionally -- at every trip and every level, including the All
-// Trips overview -- rather than being scoped to the active trip. Returned
-// rather than added directly: the map has no view/zoom yet when trips are
-// first built (that only happens once selectAll's fitBounds runs, at the
-// end of main()), and Leaflet's Path renderer throws if a circleMarker is
-// added before then -- so the caller adds the combined group to the map
-// only once the view is established. Non-interactive: it's purely
-// decorative, sitting between the track lines and the icon/POI markers,
-// and shouldn't steal hover/click from either.
-export function trackStartDots(trip) {
-  return trip.tracks.map(track => {
-    const p = track.points[0];
-    const dot = L.circleMarker([p.lat, p.lon], {
-      radius: TRACK_WEIGHT-1,
-      color: "#f7f2e4",
-      weight: 4,
-      fillColor: trip._color,
-      fillOpacity: 1,
-      opacity: FULL_TRACK_OPACITY,
-      interactive: false,
-      pane: "trackDotsPane",
-      className: "track-start-dot",
-    });
-    state.startDotByTrackId[track.id] = dot;
-    return dot;
-  });
+// per-day activity-start cluster markers above, which skip day 1) -- built
+// as a degenerate one-point "track" (both endpoints the same latlng) fed
+// through the exact same casing+colored-line styling as any real track, so
+// a round line cap renders it as a dot with no dot-specific styling code.
+// Registered in state.dayLayers like any other track so dimming picks it up
+// for free (see dimmedTrackIds); non-interactive since it's purely a visual
+// anchor, not a hoverable/clickable day.
+export function buildStartDotLayers(trip, track) {
+  const p = track.points[0];
+  const latlngs = [[p.lat, p.lon], [p.lat, p.lon]];
+  const casing = L.polyline(latlngs, { color: "#f7f2e4", weight: TRACK_CASING_WEIGHT, opacity: 1, interactive: false });
+  const line = L.polyline(latlngs, { color: trip._color, weight: TRACK_WEIGHT, opacity: 1, interactive: false });
+  line._trackLineWeight = TRACK_WEIGHT;
+  return { day: L.layerGroup([casing, line]), mainLine: line, segmentGroups: {} };
 }
 
 export function showHoverMarker(lat, lon) {

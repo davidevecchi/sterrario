@@ -1,0 +1,148 @@
+#sidebar {
+  grid-area: sidebar;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-alt);
+  border-right: 3px double var(--border-strong);
+  overflow: hidden;
+}
+
+/* Zones 1-3 (Percorso / Esplora dati / Punti d'interesse) all scroll here. */
+#sidebarScroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px 12px;
+}
+
+.card {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  padding: 12px 14px;
+  margin-bottom: 16px;
+  box-shadow: 3px 3px 0 var(--shadow-color);
+}
+.card h3 {
+  margin: 0 0 8px;
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.stat-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 12px;
+  font-size: 13px;
+}
+.stat-grid .label { color: var(--text-muted); }
+.stat-grid .value { font-weight: 600; }
+
+.activity-tally {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+.activity-tally-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.trip-sort {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 0 10px;
+}
+.trip-sort button {
+  font-family: inherit;
+  font-size: 11px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.trip-sort button.active {
+  background: var(--accent-2);
+  border-color: var(--accent-2);
+  color: var(--bg);
+}
+
+.panel { margin-bottom: 20px; }
+.panel h2 {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--accent-2);
+  margin: 0 0 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.panel-actions { display: flex; gap: 10px; margin-bottom: 6px; }
+/* Collapsible panel: the h2 doubles as a click target, with a chevron that
+   flips like the trip-tree's, and the body hides while collapsed. */
+.panel h2.panel-toggle { cursor: pointer; display: flex; align-items: center; gap: 6px; }
+.panel-toggle .chevron {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 0;
+  flex-shrink: 0;
+}
+.panel.collapsed > *:not(h2):not(.panel-toggle) { display: none; }
+/* Echoes the topbar breadcrumb's current position right in the picker
+   panel, at every level -- "Tutti i viaggi" at the root, trip name + back
+   button once a trip is active. */
+.picker-context {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: -4px 0 10px;
+  font-family: var(--font-display);
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.picker-context-trip {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+  color: var(--text);
+  font-weight: 700;
+}
+.picker-context-trip:hover { color: var(--accent); }
+.picker-context-date { margin-left: 14px; }
+.picker-back {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+.link-btn {
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+}
+
+#pickerList, #poiList { list-style: none; margin: 0; padding: 0; }

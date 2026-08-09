@@ -23,6 +23,7 @@ photos/originals/<gpx-basename>/, then deleted.
 """
 import hashlib
 import json
+import math
 import re
 import shutil
 import sys
@@ -53,6 +54,8 @@ GPS_LON = 4
 
 def dms_to_decimal(dms, ref):
     degrees, minutes, seconds = (float(v) for v in dms)
+    if math.isnan(degrees) or math.isnan(minutes) or math.isnan(seconds):
+        raise ValueError("NaN GPS coordinate (no fix)")
     value = degrees + minutes / 60.0 + seconds / 3600.0
     if ref in ("S", "W"):
         value = -value
@@ -116,7 +119,7 @@ def read_gps_and_time(path):
         try:
             lat = dms_to_decimal(gps_ifd[GPS_LAT], gps_ifd[GPS_LAT_REF])
             lon = dms_to_decimal(gps_ifd[GPS_LON], gps_ifd[GPS_LON_REF])
-        except (KeyError, TypeError, ZeroDivisionError):
+        except (KeyError, TypeError, ValueError, ZeroDivisionError):
             lat = lon = None
 
     dt_str = exif.get(DATETIME_ORIGINAL_TAG) or exif.get(DATETIME_TAG)
@@ -407,8 +410,10 @@ def main():
 
     out_path = project_dir / "data" / ".generated" / "photos.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(out_path, "w", encoding="utf-8") as f:
+    tmp_path = out_path.with_suffix(".json.tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump({"photos": photos}, f, ensure_ascii=False, separators=(",", ":"))
+    tmp_path.replace(out_path)
 
     print(f"Wrote {out_path}")
     print(f"  {len(photos)} geotagged photo(s) placed on the map")

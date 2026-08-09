@@ -1,0 +1,154 @@
+
+#elevationPanel {
+  grid-area: elevation;
+  background: var(--bg-panel);
+  border-top: 3px double var(--border-strong);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+#elevationHeader {
+  display: flex;
+  align-items: center;
+  padding: 6px 14px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+#elevationDayInfo { flex: 1; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; font-family: var(--font-display); letter-spacing: 0.02em; }
+#elevationDayInfo b { color: var(--text); }
+#elevationDayInfo .picker-context { margin: 0; }
+#elevationHeader #colorModeToggle { width: auto; flex-shrink: 0; margin: 0 14px; }
+#elevationHeader #colorModeToggle.hidden { display: none; }
+#elevationCollapse {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--text-muted);
+}
+#elevationChartWrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  padding: 0 10px 8px;
+}
+#elevationChartWrap.hidden { display: none; }
+.elevation-collapsed #elevationChartWrap { display: none; }
+
+/* All Trips level only: elevation doesn't apply with no single trip
+   selected, so this is the one place a separate strip still exists -- a
+   Gantt-style calendar-time chart, fundamentally time- not distance-axed,
+   so it can't share the elevation chart's x-axis the way POIs/photos/day
+   boundaries now do (see drawChart's isPoiLayer/isPhotoLayer datasets and
+   dayBoundaryPlugin). */
+#dayTimelineStrip {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  margin: 0 10px 8px;
+}
+#dayTimelineStrip.hidden { display: none; }
+.elevation-collapsed #dayTimelineStrip { display: none; }
+
+/* All Trips level: a real Gantt-style calendar-time chart. A month/year
+   axis runs along the bottom (grid lines behind, ticks + labels below the
+   baseline); each trip is a bar sized to its true date span and laid out
+   in the first free lane above the baseline, with its name printed beside
+   it (never squeezed inside the bar, never clipped). */
+.dts-axis-baseline {
+  position: absolute;
+  left: 0; right: 0;
+  height: 2px;
+  background: var(--border-strong);
+  border-radius: 1px;
+}
+.dts-axis-grid {
+  position: absolute;
+  top: 0;
+  bottom: 16px;
+  width: 1px;
+  background: var(--border);
+  opacity: 0.5;
+}
+.dts-axis-grid-year { opacity: 0.9; background: var(--border-strong); }
+.dts-axis-tick-label {
+  position: absolute;
+  transform: translateX(-50%);
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--text-muted);
+}
+
+.dts-gantt-bar {
+  position: absolute;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  box-shadow: 1px 1px 0 var(--shadow-color);
+  padding: 0;
+}
+.dts-gantt-bar:hover, .dts-gantt-point:hover { filter: brightness(1.15); z-index: 2; }
+.dts-gantt-point {
+  position: absolute;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: none;
+  transform: translate(-50%, -50%);
+  cursor: pointer;
+  box-shadow: 1px 1px 0 var(--shadow-color);
+  padding: 0;
+}
+.dts-gantt-label {
+  position: absolute;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--text-muted);
+}
+.dts-gantt-label:hover { color: var(--accent); }
+
+/* Custom chart tooltip (replaces Chart.js's own canvas-rendered one) so the
+   altitude can sit top-right of the title, and each detail line can carry a
+   color swatch matching its legend entry -- neither is possible with the
+   built-in tooltip's plain title/body text layout. */
+.chart-tooltip {
+  position: absolute;
+  z-index: 10;
+  pointer-events: none;
+  background: var(--sign-white);
+  color: var(--sign-ink);
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  box-shadow: 3px 3px 0 var(--shadow-color);
+  padding: 6px 10px;
+  min-width: 140px;
+  font-size: 12px;
+}
+.chart-tooltip.hidden { display: none; }
+.chart-tooltip-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  font-family: var(--font-display);
+}
+.chart-tooltip-title { font-weight: 600; }
+.chart-tooltip-ele { font-weight: 700; color: var(--accent); white-space: nowrap; }
+.chart-tooltip-body { margin-top: 4px; }
+.chart-tooltip-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+.chart-tooltip-line .swatch { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }

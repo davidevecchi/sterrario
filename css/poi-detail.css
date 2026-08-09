@@ -1,0 +1,211 @@
+
+#poiNavRow {
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 500;
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  max-width: min(96vw, 760px);
+}
+#poiNavRow.hidden { display: none; }
+
+#poiDetail {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  box-shadow: 4px 4px 0 var(--shadow-color);
+  width: 340px;
+  max-width: 100%;
+  padding: 10px 8px;
+  position: relative;
+}
+#poiDetail.collapsed #poiDetailBody .poi-cmt,
+#poiDetail.collapsed #poiDetailBody .poi-ele { display: none; }
+#poiClose, #poiCollapse {
+  position: absolute;
+  top: 6px;
+  background: none;
+  border: none;
+  font-size: 14px;
+  cursor: pointer;
+  color: var(--text-muted);
+  z-index: 1;
+}
+#poiClose { right: 8px; }
+#poiCollapse { right: 30px; font-size: 12px; }
+#poiDetailBody { padding: 8px 6px; }
+
+/* Modeled on real SAT/CAI trail signposts: a long, flat plank tapering to a
+   shallow point in the direction of travel, with a red/white corner badge at
+   the end mounted nearest the post. Fixed width and height, like the real
+   wooden boards -- text doesn't resize them, it just clips. The button itself
+   is a full-height, invisible click target so the whole vertical strip is
+   clickable, with this fixed-size plank centered inside it.
+   https://naturabenesserecultura.it/cartellonistica-sentieri-e-segnaletica */
+.poi-side-nav {
+  background: none;
+  border: none;
+  flex: 0 0 auto;
+  cursor: pointer;
+  color: var(--sign-ink);
+  display: flex;
+  align-items: center;
+  align-self: stretch;
+  padding: 0;
+}
+.poi-side-nav.disabled { visibility: hidden; pointer-events: none; }
+/* Two stacked clipped shapes (not a CSS `border`, which renders badly together
+   with `clip-path` on a pointed shape) -- an outline layer in the same color
+   as the sidebar's .card border, and a white fill inset from it by the same
+   1px, giving a clean trim at both the pointed head and the flat tail.
+   Content sits in a third, unclipped layer on top. */
+.poi-side-nav-shape {
+  position: relative;
+  width: 165px;
+  height: 45px;
+  filter: drop-shadow(2px 2px 0 var(--shadow-color));
+}
+.poi-side-nav-outline { position: absolute; inset: 0; background: var(--border-strong); }
+/* The fill is two-tone: white plank, solid red arrowhead tip -- like the real signs. */
+.poi-side-nav-fill { position: absolute; inset: 1px; }
+.poi-side-nav-prev .poi-side-nav-fill {
+  background: linear-gradient(to right, var(--sign-red) 0 13.64%, var(--sign-white) 13.64% 100%);
+}
+.poi-side-nav-next .poi-side-nav-fill {
+  background: linear-gradient(to right, var(--sign-white) 0 86.36%, var(--sign-red) 86.36% 100%);
+}
+.poi-side-nav-prev:hover .poi-side-nav-fill {
+  background: linear-gradient(to right, var(--sign-red) 0 13.64%, #ede4cd 13.64% 100%);
+}
+.poi-side-nav-next:hover .poi-side-nav-fill {
+  background: linear-gradient(to right, #ede4cd 0 86.36%, var(--sign-red) 86.36% 100%);
+}
+.poi-side-nav-content {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 100%;
+  gap: 6px;
+}
+/* Tip point is 13.64% of the 165px width (= 22px, half of the 45px height) in
+   from the pointed edge, making the apex a right angle (90°): the two edges
+   run from the point to corners each offset by exactly half the height. */
+.poi-side-nav-prev .poi-side-nav-outline,
+.poi-side-nav-prev .poi-side-nav-fill { clip-path: polygon(0% 50%, 13.64% 0%, 100% 0%, 100% 100%, 13.64% 100%); }
+.poi-side-nav-next .poi-side-nav-outline,
+.poi-side-nav-next .poi-side-nav-fill { clip-path: polygon(0% 0%, 86.36% 0%, 100% 50%, 86.36% 100%, 0% 100%); }
+/* Content padding clears the clipped tip (13.64% of the 165px plank = ~22px)
+   with a little breathing room, and clears the corner badges (20px, flush
+   with the tail edge) on the other end. */
+.poi-side-nav-prev .poi-side-nav-content { padding: 0 28px; }
+.poi-side-nav-next .poi-side-nav-content { padding: 0 28px; }
+.poi-side-nav-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+  text-align: left;
+}
+.poi-side-nav-label {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.poi-side-nav-dist {
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--sign-red);
+}
+/* Two red squares flush on the plank's tail corners, like the trail-club
+   corner badges on the real signs (see reference photo) -- sitting right on
+   the top-right/bottom-right (or left, for the "next" plank) corners of the
+   flat end, flush with the plank's own edge, not a separate bordered chip. */
+.poi-side-nav-badge {
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+.poi-side-nav-prev .poi-side-nav-badge { right: 1px; }
+.poi-side-nav-next .poi-side-nav-badge { left: 1px; }
+.poi-side-nav-badge-sq {
+  width: 21px;
+  height: 14px;
+  background: var(--sign-red);
+  border: none;
+}
+#poiDetailBody .poi-title { font-family: var(--font-display); font-weight: 600; font-size: 14px; margin-bottom: 2px; display: flex; align-items: center; gap: 6px; }
+#poiDetailBody .poi-title svg { width: 24px; height: 24px; flex-shrink: 0; fill: currentColor; }
+#poiDetailBody .poi-cmt { font-size: 12px; color: var(--text-muted); }
+#poiDetailBody .poi-ele { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+.poi-note-btn {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--accent);
+  color: var(--accent-ink);
+  border: none;
+  border-radius: 3px;
+  padding: 5px 10px;
+  margin: 4px 0;
+  cursor: pointer;
+}
+.poi-note-btn:hover { filter: brightness(1.08); }
+
+/* A little paper note, as if pulled from a trip journal. */
+#noteModal {
+  position: fixed;
+  inset: 0;
+  z-index: 6000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(20, 14, 9, 0.55);
+}
+#noteModal.hidden { display: none; }
+#noteModalPaper {
+  position: relative;
+  background: var(--sign-white);
+  color: var(--sign-ink);
+  width: min(90vw, 420px);
+  max-height: 80vh;
+  overflow-y: auto;
+  padding: 22px 20px;
+  /* rotation angle is randomized per-open in JS (see openNoteModal) */
+  box-shadow: 6px 6px 0 var(--shadow-color);
+  border: 1px solid rgba(0,0,0,0.15);
+  font-family: var(--font-body);
+}
+#noteModalClose {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  background: none;
+  border: none;
+  font-size: 15px;
+  cursor: pointer;
+  color: var(--text-muted);
+}
+#noteModalTitle {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 15px;
+  margin-bottom: 10px;
+  padding-right: 16px;
+}
+#noteModalTitle svg { width: 24px; height: 24px; vertical-align: -5px; fill: currentColor; }
+#noteModalBody { font-size: 13px; line-height: 1.5; white-space: pre-line; }

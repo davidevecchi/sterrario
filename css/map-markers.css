@@ -1,0 +1,413 @@
+
+#mapWrap {
+  grid-area: map;
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+}
+#map { width: 100%; height: 100%; }
+#map { filter: saturate(0.85) sepia(0.12) brightness(0.96); }
+/* The invisible wide hit-lines used to widen each track's click/hover area
+   (see TRACK_HIT_WEIGHT in main.js) are otherwise perfectly transparent, but
+   touch browsers still flash their default tap-highlight overlay over
+   whatever was tapped -- without this it'd paint a fat dark stripe along the
+   20px-wide hit-line shape on every tap. */
+#map .leaflet-interactive { -webkit-tap-highlight-color: transparent; }
+
+/* Manual re-fit control, top-right of the map itself (mirrors Leaflet's own
+   zoom control sitting top-left) -- needed now that clicking a track/marker
+   directly on the map no longer yanks the view (see selectTrip/selectDay's
+   `recenter` option), so there's otherwise no way back to a framed view
+   without going through the sidebar. Same round stamp look as the headbar
+   toggles, just standalone (no on/off state, only ever "pressed"). */
+.map-recenter-btn {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 500;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  color: var(--text);
+  font-size: 19px;
+  line-height: 1;
+  cursor: pointer;
+  transform: translate(0, 0);
+  box-shadow: 2px 2px 0 var(--shadow-color);
+  transition: transform .12s, box-shadow .12s, color .12s;
+}
+.map-recenter-btn:hover {
+  color: var(--accent);
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0 var(--shadow-color);
+}
+.map-recenter-btn:active {
+  transform: translate(0, 0);
+  box-shadow: none;
+}
+
+/* While Leaflet's zoom animation is running, every zoom-animated pane is
+   scaled with a CSS transform rather than actually redrawn at the new
+   coordinates (leaflet.css's `.leaflet-zoom-anim .leaflet-zoom-animated`
+   transition) -- that transform scales the already-rendered hit-lines'
+   pixel width right along with the map, so the "fixed" 20px click/hover
+   margin balloons or shrinks with the zoom level for the transition's
+   ~250ms. vector-effect: non-scaling-stroke doesn't help here since the
+   scaling happens after rendering, at the compositor level. Simplest fix:
+   stop hit-testing entirely for that brief window, so no interaction ever
+   sees the distorted margin -- normal hit-testing resumes the instant the
+   real redraw at the new zoom lands and the class is removed. */
+/* !important: leaflet.css's own `.leaflet-pane > svg path.leaflet-interactive`
+   rule (two elements + two classes) otherwise outweighs this selector's
+   specificity and would win regardless of stylesheet order. */
+.leaflet-zoom-anim .leaflet-interactive { pointer-events: none !important; }
+
+
+/* A POI marker always contains BOTH the resting dot and the full signpost pin
+   in the DOM at once; only one is ever shown, chosen with plain CSS classes
+   toggled on the (never-replaced) icon element -- "expanded" on hover,
+   "highlighted" when opened. This avoids swapping icons via Leaflet's
+   `setIcon()`, which replaces the DOM node and can desync hover listeners
+   from it, leaving a pin stuck open. `.poi-marker` is the class Leaflet
+   itself puts on that icon element (via the divIcon's `className`). */
+.poi-marker { position: relative; width: 42px; height: 48px; }
+
+.poi-marker-dot {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  transform: translateX(-50%);
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--poi-color, var(--sign-red));
+  border: 1.5px solid var(--sign-white);
+  box-shadow: 1px 1px 0 var(--shadow-color);
+}
+.poi-marker.expanded .poi-marker-dot,
+.poi-marker.highlighted .poi-marker-dot { display: none; }
+
+/* Styled after Alpine "segnavia" trail signposts: a white board with red trim,
+   tapered to a point like a marker flag planted at the POI's location.
+   Built as two stacked clipped shapes (not a CSS `border`, which renders badly
+   together with `clip-path` on a pointed shape) -- a red outer flag and a
+   white inner flag inset from it, giving a clean trim. The glyph is pinned to
+   the flat top area so it never overlaps the pointed tail. */
+.poi-divicon {
+  display: none;
+  position: absolute;
+  inset: 0;
+  filter: drop-shadow(2px 2px 0 var(--shadow-color));
+}
+.poi-marker.expanded .poi-divicon,
+.poi-marker.highlighted .poi-divicon { display: block; }
+.poi-divicon-outer {
+  position: absolute;
+  inset: 0;
+  background: var(--poi-color, var(--sign-red));
+  clip-path: polygon(0% 0%, 100% 0%, 100% 66%, 50% 100%, 0% 66%);
+}
+.poi-divicon-inner {
+  position: absolute;
+  top: 3px; left: 3px; right: 3px; bottom: 6px;
+  background: var(--sign-white);
+  clip-path: polygon(0% 0%, 100% 0%, 100% 58%, 50% 100%, 0% 58%);
+}
+.poi-glyph {
+  position: absolute;
+  top: 6px;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--sign-ink);
+}
+.poi-glyph svg { width: 24px; height: 24px; vertical-align: -3px; fill: currentColor; }
+.poi-marker.highlighted .poi-divicon-outer { background: var(--sign-ink); }
+.poi-marker.highlighted .poi-divicon-inner { background: var(--poi-color, var(--sign-red)); }
+.poi-marker.highlighted .poi-glyph { color: var(--sign-white); }
+
+/* Trip/day start & end markers, always visible for every trip (not a
+   hover-reveal dot like ordinary POIs, since they're landmarks worth seeing
+   at a glance); hovering either shape opens a tooltip with the day/date/
+   activity, using the sidebar's own day numbering rather than the marker's
+   plain cardinal count, see .trip-marker-tooltip below). Shape carries the
+   meaning: a triangle with the track's cardinal number for every day's
+   start (incl. the trip's own first day), its apex permanently pointing at
+   that day's destination -- i.e. where the next day's leg picks up -- and a
+   double-stroke "orienteering control" ring for the trip's end. Both get a
+   light fill + colored stroke in the trip's color; no activity icon is
+   drawn on the map itself. */
+.trip-marker { position: relative; width: 100%; height: 100%; filter: drop-shadow(1px 1px 0 var(--shadow-color)); }
+/* Grows slightly on hover -- scaling the whole marker from its own center
+   keeps it visually centered on its actual map position instead of
+   drifting. The scale overflows past this element's own box, and Leaflet
+   doesn't clip its marker icons, so without pointer-events:none here that
+   overflow would itself be hit-testable -- close enough to a neighboring
+   day's marker and the cosmetic grow silently steals its hover, opening two
+   tooltips at once ("hovered fast" is just what makes the pointer cross
+   that overflow sliver instead of landing past it). Hover is triggered on
+   .trip-marker-hit instead (Leaflet's own icon element, sized to the
+   marker's real, unscaled hit box) precisely so this element's growth
+   can never change what counts as "hovering this marker". */
+.trip-marker-triangle, .trip-marker-square { transition: transform 0.15s ease; transform-origin: center; pointer-events: none; }
+.trip-marker-hit:hover .trip-marker-triangle,
+.trip-marker-hit:hover .trip-marker-square { transform: scale(1.35); }
+/* Leaflet sets each marker icon's stacking order via an inline z-index
+   (roughly by latitude, plus each trip's markerZIndexOffset() band --
+   see main.js, up to ~1e8 per trip), so a hovered marker's compass can
+   end up drawn under a later trip's marker. !important is needed to win
+   against that inline style, and the value must clear the highest
+   possible zIndexOffset band (trip count * 1e8), not just Leaflet's
+   latitude-based default, to guarantee the hovered one always comes out
+   on top regardless of which trip it belongs to. */
+.trip-marker-hit:hover { z-index: 999999999 !important; }
+
+/* The trip's own first day gets an equilateral triangle (rather than the
+   plain day-start square below) so it reads as a distinct, one-off
+   landmark; its apex is rotated as a unit by the day's bearing (0 = north,
+   clockwise, matching bearingDeg()). It carries no day number (the trip
+   start is always day 1) -- instead a small colored dot sits right at the
+   apex to mark the direction point. Hidden on hover, same as the square's
+   number below, so the compass dial reads on its own. */
+.trip-marker-triangle-rotate {
+  position: absolute; inset: 0;
+  transition: opacity 0.15s ease;
+}
+.trip-marker-hit:hover .trip-marker-triangle-rotate { opacity: 0; }
+.trip-marker-triangle-shape { position: absolute; inset: 0; }
+.trip-marker-triangle-outer {
+  clip-path: polygon(50% 13%, 93% 87%, 7% 87%);
+  background: var(--marker-color);
+}
+.trip-marker-triangle-inner {
+  clip-path: polygon(50% 24%, 83% 82%, 17% 82%);
+  background: color-mix(in srgb, var(--marker-color) 20%, var(--sign-white));
+}
+.trip-marker-triangle-tip {
+  position: absolute;
+  top: 50%; left: 50%;
+  width: 5px; height: 5px;
+  margin: -2.5px 0 0 -2.5px;
+  border-radius: 50%;
+  background: var(--marker-color);
+}
+
+/* Every other day's start: a rounded square with one sharp corner, that
+   corner rotated to point at the day's destination the same way the
+   triangle's apex does (see tripMarkerIcon()'s "+135deg" comment for why
+   the rotation offset differs from the triangle's plain bearing). Hidden on
+   hover -- along with its number label -- so the compass dial that takes
+   its place reads on its own instead of layering over the shape. */
+.trip-marker-square-rotate {
+  position: absolute; inset: 3px;
+  transition: opacity 0.15s ease;
+}
+.trip-marker-hit:hover .trip-marker-square-rotate { opacity: 0; }
+.trip-marker-square-shape { position: absolute; inset: 0; }
+.trip-marker-square-outer {
+  border-radius: 50% 50% 50% 0;
+  background: var(--marker-color);
+}
+.trip-marker-square-inner {
+  inset: 3px;
+  border-radius: 50% 50% 50% 2px;
+  background: color-mix(in srgb, var(--marker-color) 20%, var(--sign-white));
+}
+
+.trip-marker-label {
+  position: absolute; inset: 3px;
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 11px;
+  color: var(--marker-color);
+  pointer-events: none;
+  z-index: 2;
+  opacity: 1;
+  transition: opacity 0.15s ease;
+}
+/* The number gives way to the compass on hover instead of overlapping it. */
+.trip-marker-hit:hover .trip-marker-label { opacity: 0; }
+
+/* On hover, a day-start marker turns into a compass pointing at that day's
+   destination -- a dial circle with an "N" mark plus a needle -- staying
+   out of the way (opacity 0) the rest of the time so the map defaults to
+   the plain numbered shape. */
+.trip-marker-compass-dial, .trip-marker-compass-n, .trip-marker-needle-rotate {
+  position: absolute;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  pointer-events: none;
+}
+.trip-marker-compass-dial {
+  inset: 2px;
+  border-radius: 50%;
+  background: var(--sign-white);
+  border: 2px solid var(--marker-color);
+  z-index: 0;
+}
+.trip-marker-compass-n {
+  top: 2px; left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--font-display);
+  font-size: 7px;
+  font-weight: 700;
+  color: var(--marker-color);
+  z-index: 1;
+}
+.trip-marker-hit:hover .trip-marker-compass-dial,
+.trip-marker-hit:hover .trip-marker-compass-n,
+.trip-marker-hit:hover .trip-marker-needle-rotate {
+  opacity: 1;
+}
+
+/* The needle is a double-ended "lancetta": .trip-marker-needle-rotate fixes
+   the heading (plain rotate(bearing), same as the dial/N above); nested
+   inside it, .trip-marker-needle-wobble carries only the hover wobble --
+   a damped-oscillation keyframe animation -- so the wobble adds on top of
+   the fixed heading instead of fighting it for the same transform. */
+.trip-marker-needle-rotate { left: 50%; top: 50%; width: 0; height: 0; z-index: 1; }
+.trip-marker-needle-wobble { position: absolute; left: 0; top: 0; width: 0; height: 0; }
+.trip-marker-hit:hover .trip-marker-needle-wobble {
+  animation: trip-marker-needle-wobble 0.9s ease-out;
+}
+@keyframes trip-marker-needle-wobble {
+  0%   { transform: rotate(0deg); }
+  12%  { transform: rotate(16deg); }
+  30%  { transform: rotate(-11deg); }
+  48%  { transform: rotate(6deg); }
+  64%  { transform: rotate(-3deg); }
+  80%  { transform: rotate(1.5deg); }
+  92%  { transform: rotate(-0.5deg); }
+  100% { transform: rotate(0deg); }
+}
+/* Round-trip tracks (start/end within 40m) have no destination bearing to
+   point at, so instead of a fixed heading the needle just keeps spinning
+   for as long as it's shown -- at a slow, steady, constant-speed rate
+   (longer duration + strict linear timing) so it reads as a smooth turn
+   rather than a wobble. The wobble keyframes above are for the fixed-
+   heading case only; cancel them here so the two animations don't compete
+   on the same element and turn the spin jerky. */
+.trip-marker-hit:hover .trip-marker-needle-spin .trip-marker-needle-wobble {
+  animation: none;
+}
+.trip-marker-hit:hover .trip-marker-needle-spin {
+  animation: trip-marker-needle-spin 3s linear infinite;
+}
+@keyframes trip-marker-needle-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+/* The needle is a bowtie of two triangles sharing a full-width waist at
+   the pivot (0,0), after res/original/compass_needle.svg: a solid front/
+   north half, and a back/south half built from the same solid triangle
+   with a smaller white triangle inset on top (trip-marker-needle-south-
+   inset), so it reads as an outlined/hollow tail instead of a solid one --
+   exactly the SVG's own north-solid/south-outlined convention. */
+.trip-marker-needle-svg {
+  position: absolute;
+  left: 50%; top: 50%;
+  width: 6px; height: 22px;
+  margin-left: -3px; margin-top: -11px;
+  overflow: visible;
+}
+.trip-marker-needle-north, .trip-marker-needle-south {
+  fill: var(--marker-color);
+}
+.trip-marker-needle-south-inset {
+  fill: var(--sign-white);
+}
+
+/* Trip end: a double-stroke ring (outer stroke / light gap / inner stroke /
+   light center), alternating colored and light-fill bands. Built as
+   concentric box-shadows on a single element rather than several
+   independently-positioned/inset divs -- every ring is then measured from
+   the exact same box in one rasterization pass, so they can't drift off-
+   center relative to each other the way stacked absolutely-positioned
+   circles can once the browser rounds each one to the pixel grid on its
+   own. A plain circle has no asymmetric silhouette to hide it, so the
+   marker's shared drop-shadow (1px right/down) reads as the ring itself
+   sitting off-center rather than just a shadow -- nudge the ring half a
+   pixel up-left to recenter what the eye actually perceives. */
+.trip-marker-ring { transform: translate(-0.5px, -0.5px); }
+.trip-marker-ring-core {
+  position: absolute; left: 50%; top: 50%;
+  width: 12px; height: 12px;
+  margin-left: -6px; margin-top: -6px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--marker-color) 20%, var(--sign-white));
+  box-shadow:
+    0 0 0 3px var(--marker-color),
+    0 0 0 6px color-mix(in srgb, var(--marker-color) 20%, var(--sign-white)),
+    0 0 0 9px var(--marker-color);
+}
+
+/* Hover tooltip for a trip/day sign, restyled off Leaflet's plain white
+   default to match the app's parchment/signpost look: trip name (accented
+   in the trip's own color), roman-numeral day, date, and activity with a
+   double-size icon (which way a day heads is shown by the marker's own
+   triangle shape on the map instead of duplicated here). */
+.leaflet-tooltip.trip-marker-tooltip-wrap {
+  background: var(--sign-white);
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  padding: 8px 12px;
+  box-shadow: 2px 2px 0 var(--shadow-color);
+  white-space: normal;
+  transition: opacity 0.1s linear;
+}
+.leaflet-tooltip-top.trip-marker-tooltip-wrap::before { border-top-color: var(--border-strong); }
+.trip-marker-tooltip { font-family: var(--font-body); font-size: 12px; line-height: 1.35; text-align: center; color: var(--text); }
+.tmt-trip {
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--marker-color);
+  margin-bottom: 2px;
+}
+.tmt-day { font-family: var(--font-display); font-weight: 600; font-size: 14px; letter-spacing: 0.03em; }
+.tmt-date { color: var(--text-muted); }
+.tmt-activity { display: flex; align-items: center; justify-content: center; gap: 6px; margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--border); }
+.tmt-icon { width: 28px; height: 28px; object-fit: contain; }
+
+/* The selected POI's day-sign tooltip (see showPoiSignTooltip) appends this
+   below the activity row: the whole day's POIs, so the signpost also reads
+   as "here's everything else this day passes". Left-aligned (unlike the
+   centered trip/day/activity rows above) since it's a list, not a label. */
+.tmt-poi-list { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--border); text-align: left; }
+.tmt-poi { display: flex; align-items: center; gap: 6px; padding: 1px 0; white-space: nowrap; }
+.tmt-poi-icon { flex-shrink: 0; width: 16px; text-align: center; }
+.tmt-poi-icon svg { width: 14px; height: 14px; vertical-align: -2px; fill: currentColor; }
+.tmt-poi-selected { font-weight: 600; }
+
+.day-icon { width: 40px; height: 40px; object-fit: contain; vertical-align: middle; }
+/* The tracks-view day list is a dense list of rows -- a 40px icon next to
+   one line of text is oversized there, so it's scaled down ~30% just in
+   that context. */
+.tl-title .day-icon { width: 28px; height: 28px; }
+
+/* Each track/day's own start/end: smaller plain circles in the track's
+   color, so a day's endpoints are visible at a glance without the weight of
+   the trip-level markers above. Start is filled solid, end is a hollow ring,
+   like a real map legend distinguishing the two ends of a line. */
+.day-boundary-marker {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--marker-color);
+  border: 2px solid var(--sign-white);
+  box-shadow: 1px 1px 0 var(--shadow-color);
+}
+.day-boundary-end {
+  background: var(--sign-white);
+  border-color: var(--marker-color);
+}

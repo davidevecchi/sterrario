@@ -543,13 +543,9 @@ function drawChart(chartPoints, poiPoints, photoPoints, options) {
               return borderColorFn(segCtx) + "55";
             },
           },
-          borderColor: (c) => {
-            const p = chartPoints[0];
-            return state.colorMode === "surface" ? (SURFACE_COLORS[p && p.surface] || SURFACE_FALLBACK) : (p && p.color) || "#e01b24";
-          },
+          borderColor: (c) => borderColorFn({ p0DataIndex: 0, p1DataIndex: 0 }),
           backgroundColor: (c) => {
-            const p = chartPoints[0];
-            const base = state.colorMode === "surface" ? (SURFACE_COLORS[p && p.surface] || SURFACE_FALLBACK) : (p && p.color) || "#e01b24";
+            const base = borderColorFn({ p0DataIndex: 0, p1DataIndex: 0 });
             return base + "55";
           },
           fill: true,

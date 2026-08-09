@@ -11,7 +11,8 @@ export const state = {
   activeTripId: null,     // null = "All Trips" level
   activeDayId: null,      // null = whole-trip view for activeTripId ("Trip" level); set = "Track" level
   dayLayers: {},         // trackId -> { day: L.layerGroup, surface: L.layerGroup, mainLine }
-  startDotByTrackId: {}, // trackId -> L.circleMarker (track start dot)
+                          // also holds a "<trackId>-start" entry per track, the degenerate
+                          // one-point track rendering its start dot (see buildStartDotLayers)
   chartDayRanges: null,  // Map<dayIndex, {start, end}> index ranges into chartPoints
   poiMarkers: {},        // tripId -> [markers] parallel to trip.pois -- sparse: a POI
                           // absorbed into a start-anchored cluster (see buildTripClusters)
@@ -28,6 +29,7 @@ export const state = {
   mapLegendHighlight: null, // temporary layer group for legend-item hover
   selectionHighlight: null, // persistent white halo under the charted track(s)
   hoverHighlight: null,  // transient white halo under whichever track is currently hovered
+  hoveredTrackId: null,  // track the persistent selection halo/stroke is narrowed to while hovering it (see showTrackHoverHighlight)
   hoveredPoiMarker: null,
   activePoiTripId: null,
   selectedPoiIndex: -1,

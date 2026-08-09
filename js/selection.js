@@ -1,7 +1,7 @@
 // ---- Selection: All Trips / Trip / Track level transitions ----
 
 import { state } from "./state.js";
-import { TRIP_SORT_DEFAULT_DIR, TRACK_SORT_DEFAULT_DIR, renderPicker, renderBreadcrumb, showTripLevelFooter, showAllTripsFooter, renderAllTripsFooterInfo, renderAllTripsTimelineStrip } from "./sidebar.js";
+import { TRIP_SORT_DEFAULT_DIR, TRACK_SORT_DEFAULT_DIR, renderPicker, renderBreadcrumb, showTripLevelFooter, showAllTripsFooter, renderAllTripsFooterInfo, renderAllTripsTimelineStrip, renderExploreLegend } from "./sidebar.js";
 import { renderPoiListFor, closePoi } from "./poi.js";
 import { renderWholeTripChart, renderDayChart } from "./chart.js";
 import { fitBoundsForTracks, visibleTracks, updateSelectionHighlight, applyColorMode } from "./map-layers.js";
@@ -25,6 +25,7 @@ export function selectAll() {
   updateSelectionHighlight();
   updateClusterVisibility();
   applyColorMode();
+  renderExploreLegend();
 }
 
 // `recenter` is false for clicks originating on the map itself (a track
@@ -50,6 +51,7 @@ export function selectTrip(tripId, { recenter = true } = {}) {
   updateSelectionHighlight();
   updateClusterVisibility();
   applyColorMode();
+  renderExploreLegend();
 }
 
 export function selectDay(tripId, dayId, { recenter = true } = {}) {
@@ -67,6 +69,7 @@ export function selectDay(tripId, dayId, { recenter = true } = {}) {
   updateSelectionHighlight();
   updateClusterVisibility();
   applyColorMode();
+  renderExploreLegend();
 }
 
 export function switchColorMode(mode) {

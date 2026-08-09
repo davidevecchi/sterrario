@@ -1,0 +1,178 @@
+
+#photoLightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 5000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  background: rgba(20, 14, 9, 0.88);
+}
+#photoLightbox.hidden { display: none; }
+#photoLightboxBody {
+  max-width: min(90vw, 1100px);
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+#photoLightboxImgWrap {
+  position: relative;
+  width: fit-content;
+  line-height: 0;
+}
+#photoLightboxImg {
+  max-width: 100%;
+  max-height: 78vh;
+  border: 4px solid var(--bg-panel);
+  box-shadow: 4px 4px 0 rgba(0,0,0,0.4);
+  object-fit: contain;
+  cursor: zoom-in;
+  display: block;
+}
+#photoLightboxPanoBadge {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  background: rgba(0,0,0,0.55);
+  color: #fff;
+  border-radius: 4px;
+  padding: 3px 5px;
+  display: flex;
+  align-items: center;
+  pointer-events: none;
+}
+#photoLightboxPanoBadge.hidden { display: none; }
+#photoLightboxCaption {
+  color: var(--bg-panel);
+  font-family: var(--font-display);
+  font-size: 13px;
+  letter-spacing: 0.03em;
+  text-align: center;
+}
+#photoLightboxClose {
+  position: absolute;
+  top: 18px;
+  right: 22px;
+  background: none;
+  border: none;
+  color: var(--bg-panel);
+  font-size: 22px;
+  cursor: pointer;
+}
+#photoLightboxPrev, #photoLightboxNext {
+  background: rgba(251, 244, 229, 0.15);
+  border: 1px solid rgba(251, 244, 229, 0.4);
+  color: var(--bg-panel);
+  border-radius: 50%;
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  font-size: 20px;
+  cursor: pointer;
+}
+#photoLightboxPrev.hidden, #photoLightboxNext.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+#photoPresentation {
+  position: fixed;
+  inset: 0;
+  z-index: 6000;
+  background: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#photoPresentation.hidden { display: none; }
+#photoPresentation { cursor: grab; user-select: none; }
+#photoPresentation.zoom-in-next { cursor: zoom-in; }
+#photoPresentation.zoom-out-next { cursor: zoom-out; }
+#photoPresentation.dragging { cursor: grabbing; }
+#photoPresentationImg {
+  max-width: 100vw;
+  max-height: 100vh;
+  object-fit: contain;
+  display: block;
+  pointer-events: none;
+}
+#photoPresentationClose,
+#photoPresentationPrev,
+#photoPresentationNext {
+  position: absolute;
+  background: none;
+  border: none;
+  color: rgba(255,255,255,0.75);
+  cursor: pointer;
+  user-select: none;
+  z-index: 1;
+  opacity: 0;
+  transition: opacity 0.4s, color 0.15s;
+  pointer-events: none;
+}
+#photoPresentation.ui-active #photoPresentationClose,
+#photoPresentation.ui-active #photoPresentationPrev:not(.hidden),
+#photoPresentation.ui-active #photoPresentationNext:not(.hidden) {
+  opacity: 1;
+  pointer-events: auto;
+}
+#photoPresentationClose {
+  top: 18px;
+  right: 22px;
+  font-size: 22px;
+  padding: 4px 8px;
+}
+#photoPresentationPrev,
+#photoPresentationNext {
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 72px;
+  line-height: 1;
+  padding: 0 18px;
+}
+#photoPresentationPrev { left: 0; }
+#photoPresentationNext { right: 0; }
+#photoPresentationClose:hover,
+#photoPresentationPrev:hover,
+#photoPresentationNext:hover { color: #fff; }
+#photoPresentationPrev.hidden,
+#photoPresentationNext.hidden { opacity: 0; pointer-events: none; }
+
+#photoPresentation.panorama {
+  overflow-x: auto;
+  overflow-y: hidden;
+  justify-content: flex-start;
+}
+#photoPresentation.panorama #photoPresentationImg {
+  height: 100vh;
+  max-height: 100vh;
+  width: auto;
+  max-width: none;
+  flex-shrink: 0;
+}
+#photoPresentation.panorama #photoPresentationClose,
+#photoPresentation.panorama #photoPresentationPrev,
+#photoPresentation.panorama #photoPresentationNext {
+  position: fixed;
+}
+
+#photoPresentation.tall-fit {
+  overflow-y: auto;
+  overflow-x: hidden;
+  align-items: flex-start;
+}
+#photoPresentation.tall-fit #photoPresentationImg {
+  width: 100vw;
+  max-width: none;
+  height: auto;
+  max-height: none;
+  flex-shrink: 0;
+}
+#photoPresentation.tall-fit #photoPresentationClose,
+#photoPresentation.tall-fit #photoPresentationPrev,
+#photoPresentation.tall-fit #photoPresentationNext {
+  position: fixed;
+}
