@@ -4,7 +4,7 @@ import { state } from "./state.js";
 import { loadTrips, loadPhotos } from "./data.js";
 import { assignTripColors, buildAltitudeBuckets, buildAltitudeLegendBuckets } from "./colors.js";
 import {
-  initMap, buildDayLayers, buildStartDotLayers, startDotId, tripTrackDrawOrder, recenterMap,
+  initMap, initTrackLayers, buildDayLayers, buildStartDotLayers, startDotId, tripTrackDrawOrder, recenterMap,
 } from "./map-layers.js";
 import { buildTripClusterLayer, updateClusterVisibility } from "./clusters.js";
 import { renderExploreLegend, setExploreLegendMode, TRIP_SORT_DEFAULT_DIR, TRACK_SORT_DEFAULT_DIR, renderPicker, showAllTripsFooter } from "./sidebar.js";
@@ -122,6 +122,11 @@ function wireUi() {
   wireHeadbarToggle("togglePhotos", "photo_camera", () => {
     setPhotosVisible(!state.photosVisible);
     return state.photosVisible;
+  });
+  wireHeadbarToggle("toggleGlobe", "public", () => {
+    state.globeActive = !state.globeActive;
+    state.map.setProjection({ type: state.globeActive ? "globe" : "mercator" });
+    return state.globeActive;
   });
   document.getElementById("photoLightbox").addEventListener("click", closePhoto);
   document.getElementById("photoLightboxClose").addEventListener("click", (e) => { e.stopPropagation(); closePhoto(); });
@@ -383,21 +388,25 @@ async function main() {
 
   trips.forEach(trip => {
     tripTrackDrawOrder(trip).forEach(track => {
-      const layers = buildDayLayers(trip, track);
-      state.dayLayers[track.id] = layers;
-      layers.day.addTo(map);
+      state.dayLayers[track.id] = buildDayLayers(trip, track);
     });
     buildTripClusterLayer(trip, photosByTrip[trip.id] || []);
   });
-  // Start dots are added in a second pass, after every trip's tracks, so
-  // they render on top of every track/casing regardless of trip order.
+  // Start dots are registered in a second pass, after every trip's tracks
+  // -- no longer a real draw-order concern (see tracks-overlay-trip/
+  // tracks-overlay-selected in map-layers.js), just preserved for parity
+  // with how the original per-trip/per-track iteration was structured.
   trips.forEach(trip => {
     trip.tracks.forEach(track => {
-      const layers = buildStartDotLayers(trip, track);
-      state.dayLayers[startDotId(track.id)] = layers;
-      layers.day.addTo(map);
+      state.dayLayers[startDotId(track.id)] = buildStartDotLayers(trip, track);
     });
   });
+  // Builds and adds every MapLibre source/layer backing track rendering
+  // now that state.dayLayers is fully populated -- see initTrackLayers.
+  // Awaited since MapLibre can't add sources/layers until the map's style
+  // has finished loading, which selectAll()/applyColorMode() right below
+  // assume has already happened (they read/write those sources directly).
+  await initTrackLayers();
 
   renderExploreLegend();
   wireUi();
@@ -413,7 +422,7 @@ async function main() {
   if (trips.length) {
     selectAll();
   } else {
-    map.setView([46, 11], 10);
+    map.jumpTo({ center: [11, 46], zoom: 10 });
   }
 }
 

@@ -48,12 +48,19 @@ export const ICO_CODEPOINT = {
   terrain: "\ue564",
   hiking: "\ue50a",
   map: "\ue55b",
-  directions_bus: "\ueff6",
+  directions_bus: "\ue530",
   sell: "\uf05b",
   border_all: "\ue228",
   downhill_skiing: "\ue509",
   route: "\ueacd",
   layers: "\ue53b",
+  public: "\ue80b",
+  explore: "\ue87a",
+  altitude: "\uf873",
+  pin_road: "\u{fff2d}",
+  edit_location_alt: "\ue1c5",
+  my_location: "\ue55c",
+  // _: "\u",
 };
 // Icon name from the POI's own `#ico=` tag, or the generic default if absent.
 export function poiIcoName(poi) {

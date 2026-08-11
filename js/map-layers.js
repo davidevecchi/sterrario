@@ -30,18 +30,17 @@ const SELECTED_TRACK_WEIGHT = 5;
 // Actual visible track/casing strokes are only a few px wide, too thin to
 // reliably hover/click -- every track segment also gets an invisible line
 // drawn this wide purely to widen the mouseover/mousemove/click hit area.
-// Made invisible via opacity: 0, not a transparent stroke color -- Chrome
-// and Firefox both skip hit-testing an SVG stroke/fill painted with a
-// literal transparent (zero-alpha) color, which would silently kill the
-// wider hit area this exists for; a fully opaque color faded out via the
-// element's own opacity keeps the hit area while staying invisible.
+// MapLibre's WebGL hit-testing (unlike Leaflet's SVG picking) handles a
+// literal `line-opacity: 0` line correctly, so no opaque-color-faded-by-
+// element-opacity workaround is needed here.
 const TRACK_HIT_WEIGHT = 40;
 
 // The currently-charted track(s) -- the whole trip, or just one selected
-// day -- get an extra-wide white halo, rendered in trackHighlightPane so it
-// always sits below every track/casing regardless of add order. Hovering
-// any other track reuses the exact same halo treatment, just for whichever
-// track is under the cursor instead of the persistent selection.
+// day -- get an extra-wide white halo, rendered on the "tracks-halo" layer,
+// the bottom-most of our own layers, so it always sits below every
+// track/casing regardless of add order. Hovering any other track reuses the
+// exact same halo treatment, just for whichever track is under the cursor
+// instead of the persistent selection.
 const SELECTION_HIGHLIGHT_WEIGHT = TRACK_CASING_WEIGHT + 4;
 
 // Once something is charted (a trip or a single day selected), every other
@@ -50,42 +49,139 @@ const SELECTION_HIGHLIGHT_WEIGHT = TRACK_CASING_WEIGHT + 4;
 const DIMMED_TRACK_OPACITY = 0.4;
 const FULL_TRACK_OPACITY = 1;
 
-// Every basemap/overlay tile layer goes through this instead of calling
-// L.tileLayer directly. `detectRetina` is deliberately NOT set here by
-// default: for a URL template with its own `{r}` placeholder (the CartoDB
-// layers below, passed retina: true) it correctly fetches that provider's
-// real "@2x" tile at the *same* zoom level -- sharper pixels, same map
-// content/label size. For every other provider, none of which expose a
-// retina asset, Leaflet's only fallback is to fetch one zoom level
-// *deeper* and shrink it to fit -- which does sharpen raw pixels, but
-// every label/road-name on the tile shrinks right along with it, making
-// text on the map noticeably harder to read. Not worth that trade for
-// providers with no real retina tile to fetch.
+// ---- MapLibre basemap/overlay descriptors ----
+//
+// Every BASEMAPS/OVERLAYS entry is a factory `(id) => descriptor |
+// Promise<descriptor>`, where `descriptor` is `{ sources, layers, sprite?,
+// glyphs? }` -- a small fragment of a MapLibre style, keyed by the caller's
+// own `id` so it can be added/removed as a unit without ever touching
+// `map.setStyle()` (which would wipe every other source/layer -- tracks,
+// halos, markers -- since it replaces the whole style document). See
+// buildLayerSwitcher for how these get activated/torn down.
+
+// Leaflet's `{s}` subdomain-sharding placeholder has no MapLibre
+// equivalent -- a raster source's own `tiles` array is round-robined the
+// same way, so `{s}` is expanded into one explicit URL per subdomain
+// letter instead. Every provider here that uses `{s}` relies on Leaflet's
+// own default subdomains ('abc'); none pass an explicit `subdomains`
+// option, so that default is hardcoded here too.
+function subdomainTiles(url, subdomains = "abc") {
+  return url.includes("{s}") ? [...subdomains].map(s => url.replace("{s}", s)) : [url];
+}
+
+function slug(name) {
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-+|-+$)/g, "");
+}
+
+// Every basemap/overlay raster entry goes through this instead of calling
+// L.tileLayer directly. The `{r}` retina placeholder (CartoDB's `retina:
+// true` entries) is simply blanked out -- MapLibre has no built-in
+// `detectRetina` equivalent, and none of the other providers expose a real
+// retina asset worth the effort of reimplementing Leaflet's zoom-level
+// fallback for. Leaflet's own tileerror-retry-once behavior (transient
+// 502s from small single-origin tile hosts) also has no direct MapLibre
+// hook and isn't reimplemented here.
 function tileLayer(url, options, { retina = false } = {}) {
-  return () => {
-    const layer = L.tileLayer(url, { ...(retina ? { detectRetina: true } : {}), ...options });
-    // Small single-origin tile hosts (no {s} subdomain sharding) occasionally
-    // 502 under the request bursts Leaflet fires while panning/zooming --
-    // a transient failure, not a missing tile, so just retry once.
-    layer.on("tileerror", ({ tile }) => setTimeout(() => {
-      const src = tile.src;
-      tile.src = "";
-      tile.src = src;
-    }, 1000));
-    return layer;
-  };
+  return (id) => ({
+    sources: {
+      [id]: {
+        type: "raster",
+        tiles: subdomainTiles(url).map(u => u.replace("{r}", retina ? "@2x" : "")),
+        tileSize: 256,
+        attribution: options.attribution,
+        maxzoom: options.maxZoom,
+      },
+    },
+    layers: [{ id, type: "raster", source: id }],
+  });
 }
 
 // A handful of Esri basemaps only ship as two separate tile services -- a
 // plain "Base" and a transparent "Reference" carrying just labels/borders
-// on top of it -- with no combined single-URL version. The layer switcher's
-// basemap radio (see buildLayerSwitcher) only ever swaps in one layer per
-// pick, so both tile layers are wrapped in one L.layerGroup here to make
-// the pair act like a single basemap; duplicate attribution text from the
-// two layers is deduped automatically by Leaflet's own AttributionControl
-// refcounting.
+// on top of it -- with no combined single-URL version. Becomes two raster
+// sources + two raster layers (instead of one Leaflet L.layerGroup);
+// MapLibre's AttributionControl dedupes attribution text per-source the
+// same way Leaflet's did per-layer.
 function layerPair(baseUrl, baseOptions, refUrl, refOptions) {
-  return () => L.layerGroup([L.tileLayer(baseUrl, baseOptions), L.tileLayer(refUrl, refOptions)]);
+  return (id) => {
+    const baseId = `${id}-base`, refId = `${id}-ref`;
+    return {
+      sources: {
+        [baseId]: { type: "raster", tiles: subdomainTiles(baseUrl), tileSize: 256, attribution: baseOptions.attribution, maxzoom: baseOptions.maxZoom },
+        [refId]: { type: "raster", tiles: subdomainTiles(refUrl), tileSize: 256, attribution: refOptions.attribution, maxzoom: refOptions.maxZoom },
+      },
+      layers: [
+        { id: baseId, type: "raster", source: baseId },
+        { id: refId, type: "raster", source: refId },
+      ],
+    };
+  };
+}
+
+// A full vector basemap, given as a style.json URL (OpenFreeMap/VersaTiles
+// -- see TODO-map-tiles.md) -- fetched once and cached, then its own
+// `sources`/`layers` are taken verbatim, just with every source id and
+// layer id prefixed with the caller's own `id` (and every layer's `source`
+// reference rewritten to match) so two different vector styles can never
+// collide even if they happen to reuse a generic source name like
+// "openmaptiles" -- they're never actually active as basemaps at the same
+// time (mutually exclusive radio pick), but this keeps add/remove
+// bookkeeping unambiguous either way. `sprite`/`glyphs` are style-wide
+// properties with no per-layer equivalent -- applied via MapLibre's
+// setSprite()/setGlyphs() by the caller once this descriptor is returned.
+function vectorStyleBasemap(styleUrl) {
+  let cached = null;
+  return (id) => {
+    if (!cached) cached = fetch(styleUrl).then(r => r.json());
+    return cached.then(style => {
+      const sourceIdMap = {};
+      const sources = {};
+      for (const [srcId, srcDef] of Object.entries(style.sources || {})) {
+        const newId = `${id}__${srcId}`;
+        sourceIdMap[srcId] = newId;
+        sources[newId] = srcDef;
+      }
+      const layers = (style.layers || []).map(layer => {
+        const newLayer = { ...layer, id: `${id}__${layer.id}` };
+        if (newLayer.source) newLayer.source = sourceIdMap[newLayer.source] || newLayer.source;
+        return newLayer;
+      });
+      return { sources, layers, sprite: style.sprite, glyphs: style.glyphs };
+    });
+  };
+}
+
+// initTrackLayers() (below) calls setMapLayerFloor() with the id of the
+// bottom-most of our own layers ("tracks-halo") once the track layers
+// exist -- every basemap/overlay layer added after that point is inserted
+// *below* it instead of on top of the whole stack, so switching basemaps
+// after tracks are loaded can't bury them. Before that (nothing else on the
+// map yet), undefined just means "add at the top", which is equivalent
+// since basemaps are the only layers that exist.
+export let mapLayerFloor = null;
+export function setMapLayerFloor(layerId) { mapLayerFloor = layerId; }
+
+async function addDescriptorToMap(map, desc) {
+  for (const [srcId, srcDef] of Object.entries(desc.sources || {})) {
+    if (!map.getSource(srcId)) map.addSource(srcId, srcDef);
+  }
+  for (const layerDef of desc.layers || []) {
+    if (!map.getLayer(layerDef.id)) map.addLayer(layerDef, mapLayerFloor || undefined);
+  }
+  // Map-wide, not per-layer -- fine here since only one vector basemap is
+  // ever active at a time (see vectorStyleBasemap's comment above).
+  if (desc.sprite) map.setSprite(desc.sprite);
+  if (desc.glyphs) map.setGlyphs(desc.glyphs);
+}
+
+function removeDescriptorFromMap(map, desc) {
+  // Layers referencing a source must go before the source itself.
+  for (const layerDef of desc.layers || []) {
+    if (map.getLayer(layerDef.id)) map.removeLayer(layerDef.id);
+  }
+  for (const srcId of Object.keys(desc.sources || {})) {
+    if (map.getSource(srcId)) map.removeSource(srcId);
+  }
 }
 
 // Every selectable basemap, all free/keyless tile services -- shown to the
@@ -122,6 +218,10 @@ const LAYER_DESCRIPTIONS = {
   "IGN France": "Mappa stradale/topografica ufficiale francese, solo Francia",
   "IGN France Ortho": "Ortofoto aerea ufficiale francese, solo Francia",
   "Maps-For-Free Relief": "Rilievo a basso dettaglio, utile solo per la vista d'insieme (zoom limitato)",
+  "OpenFreeMap Bright": "Stile vettoriale chiaro e colorato, gratuito e senza chiave API",
+  "OpenFreeMap Dark": "Stile vettoriale scuro, gratuito e senza chiave API",
+  "OpenFreeMap Liberty": "Stile vettoriale in stile OSM Liberty, gratuito e senza chiave API",
+  "OpenFreeMap Positron": "Stile vettoriale minimale e chiaro, gratuito e senza chiave API",
   "OPNVKarte": "Pensato per il trasporto pubblico (linee e fermate)",
   "OpenHikingMap": "Pensato per l'escursionismo, evidenzia sentieri e rifugi",
   "OpenStreetMap": "Lo stile standard di OpenStreetMap",
@@ -129,6 +229,10 @@ const LAYER_DESCRIPTIONS = {
   "Swisstopo": "Mappa topografica ufficiale svizzera, solo Svizzera",
   "Swisstopo SwissImage": "Ortofoto aerea ufficiale svizzera, solo Svizzera",
   "UtagawaMTB": "Pensato per la mountain bike, evidenzia sentieri e single-track",
+  "VersaTiles Colorful": "Stile vettoriale colorato, licenza CC0",
+  "VersaTiles Eclipse": "Stile vettoriale scuro, licenza CC0",
+  "VersaTiles Graybeard": "Stile vettoriale in scala di grigi, licenza CC0",
+  "VersaTiles Neutrino": "Stile vettoriale chiaro e minimale, licenza CC0",
 
   // "CartoDB Dark Matter (Labels Only)": "Solo le etichette di testo dello stile Dark Matter, trasparente",
   // "CartoDB Positron (Labels Only)": "Solo le etichette di testo dello stile Positron, trasparente",
@@ -139,12 +243,12 @@ const LAYER_DESCRIPTIONS = {
   // "OpenSeaMap": "Segnali nautici e informazioni marittime",
   "OpenSnowMap": "Piste da sci e impianti di risalita",
   "OSM GPS Traces": "Densità delle tracce GPS registrate dalla comunità OpenStreetMap",
-  "Waymarked: Cycling": "Percorsi ciclabili segnalati",
-  "Waymarked: Hiking": "Sentieri escursionistici segnalati",
-  "Waymarked: MTB": "Percorsi per mountain bike segnalati",
-  // "Waymarked: Riding": "Percorsi per equitazione segnalati",
-  // "Waymarked: Skating": "Percorsi per pattinaggio in linea segnalati",
-  "Waymarked: Slopes": "Piste sciistiche e sport invernali segnalati",
+  "Waymarked Cycling": "Percorsi ciclabili segnalati",
+  "Waymarked Hiking": "Sentieri escursionistici segnalati",
+  "Waymarked MTB": "Percorsi per mountain bike segnalati",
+  // "Waymarked Riding": "Percorsi per equitazione segnalati",
+  // "Waymarked Skating": "Percorsi per pattinaggio in linea segnalati",
+  "Waymarked Slopes": "Piste sciistiche e sport invernali segnalati",
 };
 
 const BASEMAPS = {
@@ -246,6 +350,10 @@ const BASEMAPS = {
     maxZoom: 11,
     attribution: "&copy; <a href=\"https://maps-for-free.com\" target=\"_blank\">maps-for-free.com</a>",
   }),
+  "OpenFreeMap Bright": vectorStyleBasemap("https://tiles.openfreemap.org/styles/bright"),
+  "OpenFreeMap Dark": vectorStyleBasemap("https://tiles.openfreemap.org/styles/dark"),
+  "OpenFreeMap Liberty": vectorStyleBasemap("https://tiles.openfreemap.org/styles/liberty"),
+  "OpenFreeMap Positron": vectorStyleBasemap("https://tiles.openfreemap.org/styles/positron"),
   "OPNVKarte": tileLayer("https://tileserver.memomaps.de/tilegen/{z}/{x}/{y}.png", {
     maxZoom: 18,
     attribution: "&copy; OpenStreetMap contributors &mdash; Map style: &copy; MeMoMaps (CC-BY-SA)",
@@ -277,6 +385,10 @@ const BASEMAPS = {
     maxZoom: 19,
     attribution: "&copy; OpenStreetMap contributors &copy; OpenMapTiles &mdash; Map style: UtagawaVTT / www.UtagawaVTT.com",
   }),
+  "VersaTiles Colorful": vectorStyleBasemap("https://tiles.versatiles.org/assets/styles/colorful/style.json"),
+  "VersaTiles Eclipse": vectorStyleBasemap("https://tiles.versatiles.org/assets/styles/eclipse/style.json"),
+  "VersaTiles Graybeard": vectorStyleBasemap("https://tiles.versatiles.org/assets/styles/graybeard/style.json"),
+  "VersaTiles Neutrino": vectorStyleBasemap("https://tiles.versatiles.org/assets/styles/neutrino/style.json"),
 };
 
 // Optional overlays, layered on top of whichever basemap is active --
@@ -312,65 +424,43 @@ const OVERLAYS = {
     maxZoom: 19,
     attribution: "&copy; OpenStreetMap contributors",
   }),
-  "Waymarked: Cycling": tileLayer("https://tile.waymarkedtrails.org/cycling/{z}/{x}/{y}.png", {
+  "Waymarked Cycling": tileLayer("https://tile.waymarkedtrails.org/cycling/{z}/{x}/{y}.png", {
     maxZoom: 18,
     attribution: "&copy; OpenStreetMap contributors &mdash; Icons/rendering &copy; Waymarked Trails",
   }),
-  "Waymarked: Hiking": tileLayer("https://tile.waymarkedtrails.org/hiking/{z}/{x}/{y}.png", {
+  "Waymarked Hiking": tileLayer("https://tile.waymarkedtrails.org/hiking/{z}/{x}/{y}.png", {
     maxZoom: 18,
     attribution: "&copy; OpenStreetMap contributors &mdash; Icons/rendering &copy; Waymarked Trails",
   }),
-  "Waymarked: MTB": tileLayer("https://tile.waymarkedtrails.org/mtb/{z}/{x}/{y}.png", {
+  "Waymarked MTB": tileLayer("https://tile.waymarkedtrails.org/mtb/{z}/{x}/{y}.png", {
     maxZoom: 18,
     attribution: "&copy; OpenStreetMap contributors &mdash; Icons/rendering &copy; Waymarked Trails",
   }),
-  // "Waymarked: Riding": tileLayer("https://tile.waymarkedtrails.org/riding/{z}/{x}/{y}.png", {
+  // "Waymarked Riding": tileLayer("https://tile.waymarkedtrails.org/riding/{z}/{x}/{y}.png", {
   //   maxZoom: 18,
   //   attribution: "&copy; OpenStreetMap contributors &mdash; Icons/rendering &copy; Waymarked Trails",
   // }),
-  // "Waymarked: Skating": tileLayer("https://tile.waymarkedtrails.org/skating/{z}/{x}/{y}.png", {
+  // "Waymarked Skating": tileLayer("https://tile.waymarkedtrails.org/skating/{z}/{x}/{y}.png", {
   //   maxZoom: 18,
   //   attribution: "&copy; OpenStreetMap contributors &mdash; Icons/rendering &copy; Waymarked Trails",
   // }),
-  "Waymarked: Slopes": tileLayer("https://tile.waymarkedtrails.org/slopes/{z}/{x}/{y}.png", {
+  "Waymarked Slopes": tileLayer("https://tile.waymarkedtrails.org/slopes/{z}/{x}/{y}.png", {
     maxZoom: 18,
     attribution: "&copy; OpenStreetMap contributors &mdash; Icons/rendering &copy; Waymarked Trails",
   }),
 };
 
 export function initMap() {
-  const map = L.map("map", { zoomControl: true });
-  map.on("zoomend", () => console.log("zoom", map.getZoom()));
-  const baseLayers = {};
-  for (const name in BASEMAPS) baseLayers[name] = BASEMAPS[name]();
-  baseLayers["Esri Satellite"].addTo(map);
-  const overlays = {};
-  for (const name in OVERLAYS) overlays[name] = OVERLAYS[name]();
-  buildLayerSwitcher(map, baseLayers, overlays, "Esri Satellite");
-  // A pane sandwiched between the tiles (z-index 200) and Leaflet's default
-  // overlayPane (z-index 400, where every track/casing/marker lives) --
-  // guarantees the selection halo always renders below every track, no
-  // matter what order layers are added/rebuilt in.
-  map.createPane("trackHighlightPane");
-  map.getPane("trackHighlightPane").style.zIndex = 350;
-  map.getPane("trackHighlightPane").style.pointerEvents = "none";
-  // The moving hover-point marker (see showHoverMarker) needs to always sit
-  // above every track/casing/halo -- those get reordered via bringToFront
-  // as selection/dimming changes, which would otherwise bury a marker
-  // that was added to the map earlier. A dedicated pane above Leaflet's
-  // own markerPane (600)/tooltipPane (650) sidesteps DOM order entirely.
-  // pointerEvents: none keeps the marker from stealing mousemove/mouseout
-  // from whatever track hit-line is under the cursor.
-  map.createPane("hoverPointPane");
-  map.getPane("hoverPointPane").style.zIndex = 675;
-  map.getPane("hoverPointPane").style.pointerEvents = "none";
-  // Sits just above Leaflet's overlayPane (400), where every track/casing
-  // lives -- so the persistent legend-category highlight always stays
-  // visible on top, even when hovering a track brings its casing/line to
-  // the front of overlayPane's own DOM order (see bringTrackToFront).
-  map.createPane("legendHighlightPane");
-  map.getPane("legendHighlightPane").style.zIndex = 410;
-  map.getPane("legendHighlightPane").style.pointerEvents = "none";
+  const map = new maplibregl.Map({
+    container: "map",
+    style: { version: 8, sources: {}, layers: [] },
+    center: [11, 46],
+    zoom: 10,
+    attributionControl: false,
+  });
+  map.addControl(new maplibregl.NavigationControl());
+  map.addControl(new maplibregl.AttributionControl({ compact: true }));
+  buildLayerSwitcher(map, BASEMAPS, OVERLAYS, "Esri Satellite");
   state.map = map;
   return map;
 }
@@ -383,36 +473,44 @@ export function initMap() {
 const LAYER_ICON = {
   "CartoDB Voyager": "map",
   "CyclOSM": "pedal_bike",
-  "EOX Terrain": "landscape_2",
-  "Esri NatGeo": "terrain",
+  "EOX Terrain": "altitude",
+  "Esri NatGeo": "explore",
   "Esri Ocean": "water",
   "Esri Satellite": "satellite_alt",
-  "Esri World Street": "map",
-  "Esri World Topo": "terrain",
+  "Esri World Street": "pin_road",
+  "Esri World Topo": "explore",
   "Freemap Outdoor": "hiking",
   "Humanitarian OSM": "map",
-  "IGN France": "terrain",
+  "IGN France": "explore",
   "IGN France Ortho": "satellite_alt",
-  "Maps-For-Free Relief": "landscape_2",
+  "Maps-For-Free Relief": "altitude",
+  "OpenFreeMap Bright": "map",
+  "OpenFreeMap Dark": "map",
+  "OpenFreeMap Liberty": "map",
+  "OpenFreeMap Positron": "map",
   "OPNVKarte": "directions_bus",
   "OpenHikingMap": "hiking",
   "OpenStreetMap": "map",
-  "OpenTopoMap": "terrain",
-  "Swisstopo": "terrain",
+  "OpenTopoMap": "explore",
+  "Swisstopo": "explore",
   "Swisstopo SwissImage": "satellite_alt",
   "UtagawaMTB": "pedal_bike",
+  "VersaTiles Colorful": "map",
+  "VersaTiles Eclipse": "map",
+  "VersaTiles Graybeard": "map",
+  "VersaTiles Neutrino": "map",
 
-  "CartoDB Labels": "sell",
-  "Esri Boundaries and Places": "border_all",
+  "CartoDB Labels": "edit_location_alt",
+  "Esri Boundaries and Places": "edit_location_alt",
   "Esri Transportation": "directions_bus",
   "OpenRailwayMap": "directions_bus",
   "OpenSnowMap": "downhill_skiing",
-  "OSM GPS Traces": "route",
-  "Waymarked: Cycling": "pedal_bike",
-  "Waymarked: Hiking": "hiking",
-  "Waymarked: MTB": "pedal_bike",
-  "Waymarked: Riding": "route",
-  "Waymarked: Slopes": "downhill_skiing",
+  "OSM GPS Traces": "my_location",
+  "Waymarked Cycling": "pedal_bike",
+  "Waymarked Hiking": "hiking",
+  "Waymarked MTB": "pedal_bike",
+  "Waymarked Riding": "route",
+  "Waymarked Slopes": "downhill_skiing",
 };
 // The two group-toggle buttons' own icons (distinct from the per-row
 // pictograms above): a folded map for basemaps, a stack of layers for
@@ -428,7 +526,7 @@ const SWITCHER_BUTTON_ICONS = { base: "map", overlay: "layers" };
 // .map-recenter-btn (see css/map-markers.css), which already sits outside
 // Leaflet's own control container with no z-index/positioning conflict
 // against the zoom control that stays top-left.
-function buildLayerSwitcher(map, baseLayers, overlays, defaultBase) {
+function buildLayerSwitcher(map, basemapFactories, overlayFactories, defaultBase) {
   const root = document.createElement("div");
   root.className = "layer-switcher";
 
@@ -460,7 +558,9 @@ function buildLayerSwitcher(map, baseLayers, overlays, defaultBase) {
         input.name = "layer-switcher-base";
         input.checked = name === defaultBase;
       }
-      input.addEventListener("change", () => onPick(name, input.checked));
+      input.addEventListener("change", () => {
+        Promise.resolve(onPick(name, input.checked)).catch(err => console.error(`layer switch failed (${name})`, err));
+      });
       const iconSpan = document.createElement("span");
       iconSpan.className = "layer-switcher-row-icon";
       iconSpan.innerHTML = icoHtml(LAYER_ICON[name]);
@@ -479,16 +579,38 @@ function buildLayerSwitcher(map, baseLayers, overlays, defaultBase) {
     return group;
   };
 
-  let currentBase = defaultBase;
-  const baseGroup = buildGroup("radio", SWITCHER_BUTTON_ICONS.base, "Mappa base", baseLayers, (name, checked) => {
-    if (!checked || name === currentBase) return;
-    map.removeLayer(baseLayers[currentBase]);
-    map.addLayer(baseLayers[name]);
-    currentBase = name;
+  // Each basemap/overlay factory is called lazily, only once actually
+  // picked (unlike the old eager `BASEMAPS[name]()` for all ~30 entries up
+  // front) -- its returned/resolved descriptor is kept here just long
+  // enough to remove exactly what was added, by id, on the next switch.
+  let activeBaseName = null;
+  let activeBaseDesc = null;
+  const activateBasemap = async (name) => {
+    const desc = await basemapFactories[name](slug(`bm-${name}`));
+    if (activeBaseDesc) removeDescriptorFromMap(map, activeBaseDesc);
+    await addDescriptorToMap(map, desc);
+    activeBaseName = name;
+    activeBaseDesc = desc;
+  };
+
+  const activeOverlayDescs = new Map();
+  const activateOverlay = async (name) => {
+    const desc = await overlayFactories[name](slug(`ov-${name}`));
+    await addDescriptorToMap(map, desc);
+    activeOverlayDescs.set(name, desc);
+  };
+  const deactivateOverlay = (name) => {
+    const desc = activeOverlayDescs.get(name);
+    if (desc) removeDescriptorFromMap(map, desc);
+    activeOverlayDescs.delete(name);
+  };
+
+  const baseGroup = buildGroup("radio", SWITCHER_BUTTON_ICONS.base, "Mappa", basemapFactories, (name, checked) => {
+    if (!checked || name === activeBaseName) return;
+    return activateBasemap(name);
   });
-  const overlayGroup = buildGroup("checkbox", SWITCHER_BUTTON_ICONS.overlay, "Overlay", overlays, (name, checked) => {
-    if (checked) map.addLayer(overlays[name]);
-    else map.removeLayer(overlays[name]);
+  const overlayGroup = buildGroup("checkbox", SWITCHER_BUTTON_ICONS.overlay, "Overlay", overlayFactories, (name, checked) => {
+    return checked ? activateOverlay(name) : deactivateOverlay(name);
   });
   root.append(baseGroup, overlayGroup);
   // Only clicking (not hovering) sets the "open" class -- so it needs its
@@ -497,11 +619,208 @@ function buildLayerSwitcher(map, baseLayers, overlays, defaultBase) {
   document.addEventListener("click", (e) => { if (!root.contains(e.target)) closeAll(); });
 
   document.getElementById("mapWrap").appendChild(root);
+
+  // addSource/addLayer throw if the map's own (initially empty) style
+  // hasn't finished its own async setup yet.
+  const activateDefault = () => activateBasemap(defaultBase).catch(err => console.error("initial basemap load failed", err));
+  if (map.isStyleLoaded()) activateDefault();
+  else map.once("load", activateDefault);
 }
 
 // ---- Map layers ----
+//
+// Every track (and each track's degenerate start-dot companion, see
+// startDotId/buildStartDotLayers) is backed by plain data in
+// state.dayLayers[trackId] -- points, trip color/activity, a precomputed
+// bbox, and a lazily-built featuresByMode cache -- rendered through a
+// small, fixed set of shared MapLibre sources/layers built once by
+// initTrackLayers() rather than one Leaflet layer group per track. See
+// initTrackLayers for the full source/layer stack and why it's shaped this
+// way; the functions below are the render/update side of that model.
 
-// Shared by the map (buildSegmentGroup) and the elevation chart
+function pointsToLngLat(points) {
+  return points.map(p => [p.lon, p.lat]);
+}
+
+function computeBounds(points) {
+  let minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity;
+  points.forEach(p => {
+    if (p.lon < minLng) minLng = p.lon;
+    if (p.lon > maxLng) maxLng = p.lon;
+    if (p.lat < minLat) minLat = p.lat;
+    if (p.lat > maxLat) maxLat = p.lat;
+  });
+  return [[minLng, minLat], [maxLng, maxLat]];
+}
+
+// Leaflet's dashArray is in raw pixels; MapLibre's line-dasharray is in
+// units of the line's own width -- divide by TRACK_WEIGHT so the same
+// pixel dash/gap length still results, at the weight every dashed line
+// here actually renders at.
+function toMapLibreDashArray(pxDash) {
+  return pxDash.split(",").map(n => Number(n) / TRACK_WEIGHT);
+}
+// Activities with a real (non-solid) dash pattern -- each gets its own
+// fixed-dasharray layer (see addCasingColorLayers) since line-dasharray
+// isn't a data-driven style property in MapLibre. "touring" (and anything
+// with no ACTIVITY_DASH entry, e.g. a start-dot's null activity) falls
+// through to the plain solid layer instead.
+const DASHED_ACTIVITIES = Object.entries(ACTIVITY_DASH).filter(([, dash]) => dash).map(([activity]) => activity);
+
+function emptyFeatureCollection() {
+  return { type: "FeatureCollection", features: [] };
+}
+
+// Adds a casing (optional) + solid-color + one-dash-per-activity set of
+// line layers all reading `sourceId`, at the given weights -- shared by the
+// dynamic "tracks-line" source (the normal per-mode coloring, no casing of
+// its own since that's always the static "tracks-casing" source
+// underneath) and the two "bring to front" overlay sources below (which DO
+// need their own casing, since they have to repaint a track's full look on
+// top of whatever it's crossing). Every feature on these sources carries a
+// `role` ("casing" or "color") so a source that mixes both (the overlays)
+// can't have its casing-styled layer accidentally paint a color feature
+// solid white.
+function addCasingColorLayers(map, sourceId, { casingWeight, colorWeight, includeCasing }) {
+  if (includeCasing) {
+    map.addLayer({
+      id: `${sourceId}-casing`, type: "line", source: sourceId,
+      filter: ["==", ["get", "role"], "casing"],
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: { "line-color": "#f7f2e4", "line-width": casingWeight },
+    });
+  }
+  map.addLayer({
+    id: `${sourceId}-solid`, type: "line", source: sourceId,
+    filter: ["all", ["==", ["get", "role"], "color"], ["!in", ["get", "activity"], ["literal", DASHED_ACTIVITIES]]],
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: { "line-color": ["get", "color"], "line-width": colorWeight },
+  });
+  DASHED_ACTIVITIES.forEach(activity => {
+    map.addLayer({
+      id: `${sourceId}-dash-${activity}`, type: "line", source: sourceId,
+      filter: ["all", ["==", ["get", "role"], "color"], ["==", ["get", "activity"], activity]],
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: { "line-color": ["get", "color"], "line-width": colorWeight, "line-dasharray": toMapLibreDashArray(ACTIVITY_DASH[activity]) },
+    });
+  });
+}
+// Layer ids that get dimmed (see updateTrackDimming) -- the base
+// casing+color layers only, never the "always on top" overlay layers
+// (which by construction only ever contain full-opacity, kept-visible
+// tracks) and never the invisible hit layer.
+const TRACKS_DIM_LAYER_IDS = ["tracks-casing", "tracks-line-solid", ...DASHED_ACTIVITIES.map(a => `tracks-line-dash-${a}`)];
+
+// Builds and adds every MapLibre source/layer backing track rendering, in
+// bottom-to-top order, from the now-fully-populated state.dayLayers (called
+// once from app.js after both the real-track and start-dot build passes).
+// Order, bottom to top:
+//  1. tracks-halo -- persistent/hover selection glow, always fully behind
+//     every track/casing (see renderSelectionHalo) -- the bottom-most of
+//     our own layers, so setMapLayerFloor() locks basemap switches below it.
+//  2. tracks-casing (+ tracks-hit reading the same source) -- one static
+//     whole-track casing feature per track/start-dot, built once and never
+//     rebuilt (casing color never varies by mode, so there's nothing to
+//     rebuild): the old per-run casing was only ever needed to dodge a
+//     Leaflet-SVG-specific stacking notch at run joints, which doesn't
+//     exist here. tracks-hit reads the same geometry, invisible and wide,
+//     filtered to exclude start-dots (non-interactive, matching the old
+//     `interactive:false`).
+//  3. tracks-line -- the actual per-mode coloring (trip/surface/highway/
+//     gradient/altimetry), rebuilt via setData whenever any track's mode
+//     changes (see rebuildColorSource/applyColorMode).
+//  4. tracks-overlay-trip -- a duplicate casing+color repaint of just the
+//     active trip's own tracks (dimmedTrackIds()), so the whole trip visibly
+//     wins over whatever unrelated (now-dimmed) track it crosses.
+//  5. tracks-overlay-selected -- same idea, for whichever track(s) are
+//     actually selected/hovered right now (highlightedTrackIds()), at
+//     SELECTED_TRACK_WEIGHT instead of the normal weight, stacked above
+//     tracks-overlay-trip so it wins when both apply.
+//  6. tracks-legend-select -- the Esplora-dati legend's click-to-highlight
+//     overlay (see setLegendSelectSegments, called from chart.js).
+//  7. tracks-hover-point -- the elevation-chart-synced hover dot (see
+//     showHoverMarker), topmost of our own canvas layers.
+// MapLibre can't addSource/addLayer until the map's own style has finished
+// its (async, even for the empty inline style initMap starts with) load --
+// returns a promise so app.js can await this before touching any of the
+// sources built here (rebuildColorSource, applyColorMode, etc. all assume
+// they already exist).
+export function initTrackLayers() {
+  const map = state.map;
+  return new Promise((resolve) => {
+    const build = () => { buildTrackLayers(map); resolve(); };
+    if (map.isStyleLoaded()) build();
+    else map.once("load", build);
+  });
+}
+
+function buildTrackLayers(map) {
+  const trackIds = Object.keys(state.dayLayers);
+
+  map.addSource("tracks-halo", { type: "geojson", data: emptyFeatureCollection() });
+  map.addLayer({
+    id: "tracks-halo", type: "line", source: "tracks-halo",
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: { "line-color": "#ffffff", "line-width": SELECTION_HIGHLIGHT_WEIGHT },
+  });
+  setMapLayerFloor("tracks-halo");
+
+  const casingFeatures = trackIds.map(casingFeature).filter(Boolean);
+  map.addSource("tracks-casing", { type: "geojson", data: { type: "FeatureCollection", features: casingFeatures } });
+  map.addLayer({
+    id: "tracks-casing", type: "line", source: "tracks-casing",
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: { "line-color": "#f7f2e4", "line-width": TRACK_CASING_WEIGHT },
+  });
+  map.addLayer({
+    id: "tracks-hit", type: "line", source: "tracks-casing",
+    filter: ["!=", ["get", "isStartDot"], true],
+    paint: { "line-color": "#000000", "line-opacity": 0, "line-width": TRACK_HIT_WEIGHT },
+  });
+
+  map.addSource("tracks-line", { type: "geojson", data: emptyFeatureCollection() });
+  addCasingColorLayers(map, "tracks-line", { colorWeight: TRACK_WEIGHT, includeCasing: false });
+
+  map.addSource("tracks-overlay-trip", { type: "geojson", data: emptyFeatureCollection() });
+  addCasingColorLayers(map, "tracks-overlay-trip", { casingWeight: TRACK_CASING_WEIGHT, colorWeight: TRACK_WEIGHT, includeCasing: true });
+
+  map.addSource("tracks-overlay-selected", { type: "geojson", data: emptyFeatureCollection() });
+  addCasingColorLayers(map, "tracks-overlay-selected", { casingWeight: TRACK_CASING_WEIGHT, colorWeight: SELECTED_TRACK_WEIGHT, includeCasing: true });
+
+  map.addSource("tracks-legend-select", { type: "geojson", data: emptyFeatureCollection() });
+  map.addLayer({
+    id: "tracks-legend-select-halo", type: "line", source: "tracks-legend-select",
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: { "line-color": "#f7f2e4", "line-width": LEGEND_HIGHLIGHT_HALO_WIDTH },
+  });
+  map.addLayer({
+    id: "tracks-legend-select-color", type: "line", source: "tracks-legend-select",
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: { "line-color": ["get", "color"], "line-width": LEGEND_HIGHLIGHT_WIDTH },
+  });
+
+  map.addSource("tracks-hover-point", { type: "geojson", data: { type: "Feature", geometry: { type: "Point", coordinates: [0, 0] } } });
+  map.addLayer({
+    id: "tracks-hover-point", type: "circle", source: "tracks-hover-point",
+    layout: { visibility: "none" },
+    paint: { "circle-radius": 6, "circle-color": "#d79a1e", "circle-stroke-color": "#fbf4e5", "circle-stroke-width": 2 },
+  });
+
+  rebuildColorSource();
+  setupTrackEventHandlers(map);
+  // The hover tooltip is a plain absolutely-positioned DOM div (see
+  // showHoverTooltip), not a MapLibre Marker/Popup that repositions itself
+  // automatically -- without this it would visually drift off its anchor
+  // point during any pan/zoom/rotate that happens while it's shown (e.g.
+  // scroll-zooming with the cursor still resting on a track).
+  map.on("move", () => {
+    if (state.hoverTooltipEl && state.hoverTooltipAnchor && !state.hoverTooltipFading) {
+      positionHoverTooltip(state.hoverTooltipAnchor, state.hoverTooltipOpts || {});
+    }
+  });
+}
+
+// Shared by the map (buildRunModeFeatures) and the elevation chart
 // (chart.js's segmentColorFn) so a segment's mode-coloring is computed in
 // exactly one place -- returns undefined for anything the given mode
 // doesn't cover (including mode "trip", which has no segment coloring of
@@ -515,19 +834,34 @@ export function segmentColorForMode(mode, surface, highway, grade, ele) {
   return null;
 }
 
-// Every segment's casing is added first, in one pass, so it forms a solid
-// base the whole track sits on; the colored segments are then layered on
-// top in a second pass, newest-first-in-time so the oldest segment ends up
-// front-most (same "oldest on top" convention as tripTrackDrawOrder) --
-// otherwise each segment's own casing would land on top of the *previous*
-// segment's colored line at every joint, leaving a visible white notch at
-// every cap along the track.
-export function buildSegmentGroup(trip, track, mode) {
+// The single whole-track feature every track shows in "trip" mode --
+// solid trip color, dashed by activity (start-dots get a null activity, so
+// they always fall through to the plain solid layer, matching the old
+// undashed start-dot rendering).
+function buildTripModeFeatures(trackId) {
+  const d = state.dayLayers[trackId];
+  return [{
+    type: "Feature",
+    properties: { trackId, tripId: d.tripId, role: "color", color: d.tripColor, activity: d.isStartDot ? null : d.activity },
+    geometry: { type: "LineString", coordinates: pointsToLngLat(d.points) },
+  }];
+}
+
+// Consecutive point-to-point segments sharing the same color are merged
+// into one multi-point run/feature instead of one per pair -- a trip-wide
+// coloring can otherwise mean thousands of individual features, which gets
+// laggish fast. Color only changes where surface/highway/grade-bucket
+// actually changes, so this is normally a small fraction of the raw point
+// count. Only ever called for real tracks (start-dots never leave "trip"
+// mode, see chartedTrackIds), so state.trackById[trackId] is always
+// populated here.
+function buildRunModeFeatures(trackId, mode) {
+  const d = state.dayLayers[trackId];
+  const { track } = state.trackById[trackId];
+  const points = track.points;
   const grades = mode === "gradient" ? trackGradeSeries(track) : null;
   const surfaces = mode === "surface" ? trackCategorySeries(track, "surface") : null;
   const highways = mode === "highway" ? trackCategorySeries(track, "highway") : null;
-  const group = L.layerGroup();
-  const points = track.points;
   const colorAt = (i) => segmentColorForMode(
     mode,
     surfaces ? surfaces[i] : undefined,
@@ -535,12 +869,6 @@ export function buildSegmentGroup(trip, track, mode) {
     grades ? grades[i] : undefined,
     mode === "altimetry" ? points[i].ele : undefined
   );
-  // Consecutive point-to-point segments sharing the same color are merged
-  // into one multi-point polyline instead of one polyline per pair -- a
-  // trip-wide coloring can otherwise mean thousands of individual Leaflet
-  // layers (casing+colored+hit-line each), which gets laggish fast. Color
-  // only changes where surface/highway/grade-bucket actually changes, so
-  // this is normally a small fraction of the raw point count.
   const runs = [];
   for (let i = 1; i < points.length; i++) {
     const color = colorAt(i - 1);
@@ -548,175 +876,48 @@ export function buildSegmentGroup(trip, track, mode) {
     if (run && run.color === color) run.end = i;
     else runs.push({ color, start: i - 1, end: i });
   }
-  const runLatLngs = (run) => points.slice(run.start, run.end + 1).map(p => [p.lat, p.lon]);
-  runs.forEach(run => {
-    group.addLayer(L.polyline(runLatLngs(run), { color: "#f7f2e4", weight: TRACK_CASING_WEIGHT, opacity: 1, lineCap: "butt" }));
-  });
-  for (let i = runs.length - 1; i >= 0; i--) {
-    const run = runs[i];
-    const seg = L.polyline(runLatLngs(run), { color: run.color, weight: TRACK_WEIGHT, opacity: 1, lineCap: "round" });
-    seg._trackLineWeight = TRACK_WEIGHT;
-    group.addLayer(seg);
-  }
-  // One hit-line for the whole track (matching buildDayLayers' per-run
-  // approach) rather than one per point-pair -- hover/click granularity
-  // comes from the mousemove handler's closest-point lookup, not from the
-  // hit-line being split, so this loses nothing there.
-  const hitLine = L.polyline(points.map(p => [p.lat, p.lon]), { color: "#000", weight: TRACK_HIT_WEIGHT, opacity: 0 });
-  hitLine._isHitLine = true;
-  attachTrackHandlers(hitLine, trip, track, points);
-  group.addLayer(hitLine);
-  return group;
+  return runs.map(run => ({
+    type: "Feature",
+    properties: { trackId, tripId: d.tripId, role: "color", color: run.color, activity: null },
+    geometry: { type: "LineString", coordinates: pointsToLngLat(points.slice(run.start, run.end + 1)) },
+  }));
 }
 
-// Wires up a track's mouseover/mousemove/click handling on its invisible
-// wide hit-line (see TRACK_HIT_WEIGHT) -- the visible casing+colored line
-// are only a few px wide and too thin to reliably hover/click, so hovering
-// and clicking are always driven by the dedicated hit-line instead: it
-// shows the day's tooltip and drops a halo under it as either the
-// persistent selection highlight or a preview of it, keeps the elevation
-// chart's crosshair in sync, and drills down a level on click.
-//
-// Which level hover/click act on follows the trip that's currently active
-// (if any), not just the track's own trip: for the active trip's own
-// tracks, hovering/clicking always targets that specific track/day -- it's
-// the one already drilled into, so there's nowhere shallower to go. For
-// every other track -- including any/all of them at the "all trips" level,
-// where no trip is active yet -- hovering/clicking targets the whole trip
-// instead, since jumping straight to one of its days would skip the trip
-// overview entirely.
-
-// Shared by every hoverable track surface -- the map hit-line
-// (attachTrackHandlers below) and the start/end trip markers
-// (clusters.js) -- so "hovering this track previews/confirms its
-// selection halo and shows its day tooltip" is implemented exactly once.
-// Either `trackId` (narrows the halo to just this track) or `tripId`
-// (previews the whole trip) is given, matching showTrackHoverHighlight/
-// showTripHoverHighlight's own split.
-export function beginTrackHover(latlng, tooltipHtml, tooltipOpts, { trackId, tripId } = {}) {
-  if (trackId) showTrackHoverHighlight(trackId);
-  else if (tripId) showTripHoverHighlight(tripId);
-  state.hoverTooltipOnLayer = true;
-  showHoverTooltip(latlng, tooltipHtml, tooltipOpts);
-}
-export function endTrackHover() {
-  clearTrackHoverHighlight();
-  state.hoverTooltipOnLayer = false;
-  hideHoverTooltip();
-}
-
-export function attachTrackHandlers(hitLine, trip, track, points) {
-  const tooltipHtml = tripMarkerTooltipHtml(trip, trackSidebarDayNumber(track), track.start_t, track.activity);
-  const tooltipOpts = trackTooltipOpts(-10, true);
-  const isActiveTrip = () => state.activeTripId === trip.id;
-  // Anchors the tooltip to the closest point on this hit-line's own run of
-  // points rather than the raw cursor position, so it sticks to the track
-  // itself instead of hovering wherever the (wide, invisible) hit-line
-  // happens to be under the mouse.
-  const closestOnSeg = (latlng) => closestPointOnPolyline(latlng, points);
-  // mousemove fires far more often than the screen can repaint, and the
-  // handler's own work (re-syncing the elevation chart's active point,
-  // which triggers a full Chart.js redraw) is too heavy to redo on every
-  // single event -- doing so made the tooltip visibly lag behind the
-  // cursor. Coalescing to one flush per animation frame keeps only the
-  // latest position and matches the actual paint rate.
-  let pendingLatLng = null, rafScheduled = false;
-  const flushMouseMove = () => {
-    rafScheduled = false;
-    if (!pendingLatLng) return;
-    const latlng = pendingLatLng;
-    pendingLatLng = null;
-    perfMark("map.hitline.tooltip", () => moveHoverTooltip(closestOnSeg(latlng)));
-    perfMark("map.hitline.onTrackHover", () => onTrackHover(trip, track, latlng));
+// This track/start-dot's static casing feature -- same geometry backs both
+// the always-on "tracks-casing" layer and (duplicated in) whichever
+// overlay source currently needs to repaint this track on top.
+function casingFeature(trackId) {
+  const d = state.dayLayers[trackId];
+  if (!d) return null;
+  return {
+    type: "Feature",
+    properties: { trackId, role: "casing", isStartDot: !!d.isStartDot },
+    geometry: { type: "LineString", coordinates: pointsToLngLat(d.points) },
   };
-  hitLine.on("mouseover", (e) => {
-    beginTrackHover(closestOnSeg(e.latlng), tooltipHtml, tooltipOpts, isActiveTrip() ? { trackId: track.id } : { tripId: trip.id });
-  });
-  hitLine.on("mouseout", () => {
-    pendingLatLng = null;
-    endTrackHover();
-    clearChartHover();
-  });
-  hitLine.on("mousemove", (e) => {
-    pendingLatLng = e.latlng;
-    if (!rafScheduled) {
-      rafScheduled = true;
-      requestAnimationFrame(flushMouseMove);
-    }
-  });
-  hitLine.on("click", () => {
-    if (isActiveTrip()) selectDay(trip.id, track.id, { recenter: false });
-    else selectTrip(trip.id, { recenter: false });
-  });
 }
 
-export function buildDayLayers(trip, track) {
-  const dayLatLngs = track.points.map(p => [p.lat, p.lon]);
-  // Kept detached from the map, purely so fitBounds/highlight code
-  // elsewhere can still call .getBounds()/.getLatLngs() on one object for
-  // the whole track, regardless of how many run-pieces it's split into
-  // below for rendering.
-  const mainLine = L.polyline(dayLatLngs);
-
-  const group = L.layerGroup();
-  const latlngs = dayLatLngs;
-  // Casing stays solid even though the line above it is dashed by
-  // activity -- it reads as a continuous colored-dash "tube" rather than
-  // a broken line, so the track is always easy to follow at a glance.
-  const casing = L.polyline(latlngs, { color: "#f7f2e4", weight: TRACK_CASING_WEIGHT, opacity: 1 });
-  const line = L.polyline(latlngs, {
-    color: trip._color, weight: TRACK_WEIGHT, opacity: 1,
-    dashArray: ACTIVITY_DASH[track.activity] || null,
-  });
-  line._trackLineWeight = TRACK_WEIGHT;
-  const hitLine = L.polyline(latlngs, { color: "#000", weight: TRACK_HIT_WEIGHT, opacity: 0 });
-  hitLine._isHitLine = true;
-  attachTrackHandlers(hitLine, trip, track, track.points);
-  group.addLayer(casing);
-  group.addLayer(line);
-  group.addLayer(hitLine);
-
-  return { day: group, mainLine, segmentGroups: {} };
+function haloFeature(trackId) {
+  const d = state.dayLayers[trackId];
+  if (!d) return null;
+  return {
+    type: "Feature",
+    properties: { trackId },
+    geometry: { type: "LineString", coordinates: pointsToLngLat(d.points) },
+  };
 }
 
-// One icon per POI, created once and never swapped: `setIcon()` replaces
-// the marker's DOM node, which can desync Leaflet's hover listeners from
-// the new element and leave a pin stuck open. Instead both the resting dot
-// and the full signpost pin are always in the DOM, and a "highlighted" CSS
-// class on the (stable) icon element -- set when opened -- decides which
-// one is visible.
-export function poiMarkerIcon(poi, color) {
-  const glyph = poiIconHtml(poi);
-  return L.divIcon({
-    className: "poi-marker",
-    html: `
-      <div style="--poi-color: ${color}">
-        <div class="poi-marker-dot"><span class="poi-dot-glyph">${glyph}</span></div>
-        <div class="poi-divicon">
-          <div class="poi-divicon-outer"></div>
-          <div class="poi-divicon-inner"></div>
-          <span class="poi-glyph">${glyph}</span>
-        </div>
-      </div>
-    `,
-    iconSize: [42, 48],
-    iconAnchor: [21, 48],
-    popupAnchor: [0, -48],
-  });
-}
-
+// Lazily builds (and caches) the given mode's feature array for one track
+// -- the direct replacement for the old per-mode Leaflet layer group.
 export function groupForMode(trackId, mode) {
   const layers = state.dayLayers[trackId];
-  if (mode === "trip") return layers.day;
-  if (!layers.segmentGroups[mode]) {
-    const { trip, track } = state.trackById[trackId];
-    layers.segmentGroups[mode] = buildSegmentGroup(trip, track, mode);
+  if (!layers.featuresByMode[mode]) {
+    layers.featuresByMode[mode] = mode === "trip" ? buildTripModeFeatures(trackId) : buildRunModeFeatures(trackId, mode);
   }
-  return layers.segmentGroups[mode];
+  return layers.featuresByMode[mode];
 }
 
-// Which color-mode group a track is actually showing on the map right now.
-// Defaults to "trip" -- the group every track starts in at load -- since a
+// Which color-mode a track is actually showing on the map right now.
+// Defaults to "trip" -- the mode every track starts in at load -- since a
 // track only ever gets switched to the surface/highway/gradient coloring
 // while it's part of the current charted selection (see applyColorMode).
 export function currentModeForTrack(trackId) {
@@ -724,31 +925,46 @@ export function currentModeForTrack(trackId) {
   return (layers && layers._currentMode) || "trip";
 }
 
+// Rebuilds the shared "tracks-line" source from every track's current mode
+// -- called once at initial load and every time applyColorMode changes any
+// track's mode.
+function rebuildColorSource() {
+  const features = [];
+  Object.keys(state.dayLayers).forEach(trackId => {
+    features.push(...groupForMode(trackId, currentModeForTrack(trackId)));
+  });
+  state.map.getSource("tracks-line").setData({ type: "FeatureCollection", features });
+}
+
+// Casing + current-mode color features for the given track ids, in one
+// array -- the content of whichever "bring to front" overlay source needs
+// to repaint them (see tracks-overlay-trip/tracks-overlay-selected).
+function overlayFeaturesFor(ids) {
+  const features = [];
+  ids.forEach(trackId => {
+    const c = casingFeature(trackId);
+    if (c) features.push(c);
+    features.push(...groupForMode(trackId, currentModeForTrack(trackId)));
+  });
+  return features;
+}
+function renderOverlayTrip() {
+  state.map.getSource("tracks-overlay-trip").setData({ type: "FeatureCollection", features: overlayFeaturesFor(dimmedTrackIds()) });
+}
+function renderOverlaySelected() {
+  state.map.getSource("tracks-overlay-selected").setData({ type: "FeatureCollection", features: overlayFeaturesFor(highlightedTrackIds()) });
+}
+
 // Only the charted track(s) (see chartedTrackIds -- the selected day, or
 // every day of the selected trip if no single day is picked) ever show the
 // surface/highway/gradient coloring; every other track always stays in its
 // own trip's identity color, no matter what "Colora tracce per" is set to.
 export function applyColorMode() {
-  const chartedIds = chartedTrackIds();
-  const charted = new Set(chartedIds);
-  // Only tracks that are charted now, or were charted before this call (and
-  // so may need resetting back to "trip" mode), can possibly need a mode
-  // change -- every other track is already sitting in "trip" mode and stays
-  // there, so there's no need to walk the whole dataset's worth of tracks.
-  const affected = new Set([...chartedIds, ...state.prevChartedTrackIds]);
-  affected.forEach(trackId => {
-    const layers = state.dayLayers[trackId];
-    if (!layers) return;
-    const targetMode = charted.has(trackId) ? state.colorMode : "trip";
-    const current = currentModeForTrack(trackId);
-    if (current === targetMode) return;
-    const oldGroup = groupForMode(trackId, current);
-    const newGroup = groupForMode(trackId, targetMode);
-    if (state.map.hasLayer(oldGroup)) state.map.removeLayer(oldGroup);
-    newGroup.addTo(state.map);
-    layers._currentMode = targetMode;
+  const chartedIds = new Set(chartedTrackIds());
+  Object.keys(state.dayLayers).forEach(trackId => {
+    state.dayLayers[trackId]._currentMode = chartedIds.has(trackId) ? state.colorMode : "trip";
   });
-  state.prevChartedTrackIds = chartedIds;
+  rebuildColorSource();
   // The persistent halo/weight-5 treatment only shows for a non-"Tracce"
   // coloring (see persistentHaloTrackIds) -- switching modes can turn it on
   // or off on its own, with no other selection change to trigger it.
@@ -757,15 +973,15 @@ export function applyColorMode() {
 }
 
 export function fitBoundsForTracks(tracks) {
-  const bounds = [];
+  let bounds = null;
   tracks.forEach(track => {
     const layers = state.dayLayers[track.id];
-    if (layers && layers.mainLine.getBounds().isValid()) bounds.push(layers.mainLine.getBounds());
+    if (!layers) return;
+    const b = new maplibregl.LngLatBounds(layers.bounds[0], layers.bounds[1]);
+    bounds = bounds ? bounds.extend(b) : b;
   });
-  if (!bounds.length) return;
-  let b = bounds[0];
-  bounds.slice(1).forEach(x => { b = b.extend(x); });
-  state.map.fitBounds(b, { padding: [30, 30] });
+  if (!bounds) return;
+  state.map.fitBounds(bounds, { padding: 30 });
 }
 
 // Backs the map's own recenter button -- refits to whatever's currently
@@ -818,33 +1034,12 @@ export function dimmedTrackIds() {
   return trip ? [].concat(...trip.tracks.map(t => [t.id, startDotId(t.id)])) : [];
 }
 
-// Shared white halo builder for both the persistent selection highlight
-// and the transient per-track hover highlight below -- same look, just
-// different lifetimes and (in the hover case) a slightly narrower weight
-// so it doesn't read as "this is now selected".
-function trackHaloLayer(trackId, weight) {
-  const layers = state.dayLayers[trackId];
-  if (!layers) return null;
-  return L.polyline(layers.mainLine.getLatLngs(), {
-    pane: "trackHighlightPane",
-    color: "#ffffff",
-    weight,
-    opacity: 1,
-    lineCap: "round",
-    lineJoin: "round",
-    interactive: false,
-  });
-}
-
-// Shared by the persistent selection halo and the transient hover-narrowed
-// halo below -- draws exactly one halo per given track id.
+// Rebuilds the "tracks-halo" source's content to exactly the given track
+// ids -- shared by the persistent selection halo and every hover-highlight
+// variant below.
 function renderSelectionHalo(ids) {
-  if (!state.selectionHighlight) state.selectionHighlight = L.layerGroup().addTo(state.map);
-  state.selectionHighlight.clearLayers();
-  ids.forEach(trackId => {
-    const halo = trackHaloLayer(trackId, SELECTION_HIGHLIGHT_WEIGHT);
-    if (halo) halo.addTo(state.selectionHighlight);
-  });
+  const features = ids.map(haloFeature).filter(Boolean);
+  state.map.getSource("tracks-halo").setData({ type: "FeatureCollection", features });
 }
 
 export function updateSelectionHighlight() {
@@ -856,85 +1051,63 @@ export function updateSelectionHighlight() {
   updateTrackDimming();
 }
 
-// Which track id(s) currently get the "selected" halo/weight treatment --
-// normally every charted track (see chartedTrackIds), but while hovering a
-// track of the active trip, narrowed down to just the hovered one (see
-// showTrackHoverHighlight); while hovering a different trip entirely,
-// widened to every one of *its* tracks instead (see showTripHoverHighlight)
-// -- either way the hovered thing always gets the same weight-5 treatment
-// the persistent selection itself would.
+// Which track id(s) currently get the "selected" weight-5/on-top treatment
+// -- normally every charted track (see chartedTrackIds), but while
+// hovering a track of the active trip, narrowed down to just the hovered
+// one (see showTrackHoverHighlight); while hovering a different trip
+// entirely, widened to every one of *its* tracks instead (see
+// showTripHoverHighlight) -- either way the hovered thing always gets the
+// same weight-5/on-top treatment the persistent selection itself would.
 function highlightedTrackIds() {
   if (state.hoveredTrackId) return [state.hoveredTrackId];
   if (state.hoveredTripId) return state.tripById[state.hoveredTripId].tracks.map(t => t.id);
   return persistentHaloTrackIds();
 }
 
+// What the halo (tracks-halo source) should show right now: hovering one
+// of the active trip's own tracks *narrows* the persistent halo down to
+// just that track (matching highlightedTrackIds' own narrowing, since
+// there's a real persistent selection to narrow from); hovering a
+// *different* trip's track only ever *adds* a preview halo for that trip's
+// tracks on top of whatever persistent halo already exists, since there's
+// no persistent selection at that level to narrow -- see
+// showTrackHoverHighlight/showTripHoverHighlight for which case is which.
+function currentHaloIds() {
+  if (state.hoveredTrackId) return [state.hoveredTrackId];
+  if (state.hoveredTripId) return [...persistentHaloTrackIds(), ...state.tripById[state.hoveredTripId].tracks.map(t => t.id)];
+  return persistentHaloTrackIds();
+}
+
 // Once a trip is active, every track outside it fades out so the active
 // trip pops against the rest of the map -- applies to whichever
-// color-mode group is currently shown for each track, casing included, so
+// color-mode is currently shown for each track, casing included, so
 // dimming stays correct across "Colora tracce per" switches too. Picking a
 // specific day within the trip only narrows the halo/color-mode (see
 // chartedTrackIds), not the dimming: the rest of that trip's tracks stay
 // at full opacity too.
 export function updateTrackDimming() {
   const dimmedIds = dimmedTrackIds();
-  const selectedIds = highlightedTrackIds();
-  const charted = new Set(dimmedIds);
-  const dimActive = charted.size > 0;
-  const selected = new Set(selectedIds);
-  // Every track's opacity/weight only actually changes if it's charted or
-  // selected now, or was charted/selected just before this call -- anything
-  // outside that union is already in the right state and doesn't need its
-  // layer group walked again.
-  // When dimming just switched on or off, every track's opacity needs to be
-  // re-evaluated, not just the (dimmed ∪ selected) sets -- otherwise tracks
-  // that are neither now (or weren't previously) keep whatever opacity they
-  // happened to have until something else touches them, e.g. a hover.
-  const affected = dimActive !== state.prevDimActive
-    ? new Set(Object.keys(state.dayLayers))
-    : new Set([...dimmedIds, ...selectedIds, ...state.prevDimmingTrackIds]);
-  affected.forEach(trackId => {
-    if (!state.dayLayers[trackId]) return;
-    const isCharted = !dimActive || charted.has(trackId);
-    const opacity = isCharted ? FULL_TRACK_OPACITY : DIMMED_TRACK_OPACITY;
-    const isSelectedTrack = selected.has(trackId);
-    const group = groupForMode(trackId, currentModeForTrack(trackId));
-    group.eachLayer(layer => {
-      if (!layer.setStyle || layer._isHitLine) return;
-      const weight = layer._trackLineWeight !== undefined
-        ? (isSelectedTrack ? SELECTED_TRACK_WEIGHT : layer._trackLineWeight)
-        : undefined;
-      layer.setStyle(weight !== undefined ? { opacity, weight } : { opacity });
-    });
-  });
-  // Charted tracks draw above every dimmed one, oldest-day-last (see
-  // tripTrackDrawOrder) so day 1 ends up front-most among them, same as the
-  // initial add order -- then whichever track/trip is actually
-  // hovered/selected is brought above that, so hovering always wins
-  // regardless of day order. Bringing every layer (casing, line, and the
-  // invisible hit-line alike) to front keeps the click/hover area aligned
-  // with what's visibly on top instead of buried under it.
-  if (dimActive) {
-    [...dimmedIds].reverse().forEach(trackId => bringTrackToFront(trackId));
-  }
-  [...selectedIds].reverse().forEach(trackId => bringTrackToFront(trackId));
-  state.prevDimmingTrackIds = [...new Set([...dimmedIds, ...selectedIds])];
-  state.prevDimActive = dimActive;
-}
-
-// Brings a track's casing+line (in whichever color mode is currently
-// shown) to the top of the map's drawing order, so it isn't hidden under
-// some other track it happens to cross.
-function bringTrackToFront(trackId) {
-  const group = groupForMode(trackId, currentModeForTrack(trackId));
-  group.eachLayer(layer => { if (layer.bringToFront) layer.bringToFront(); });
-  const dotLayers = state.dayLayers[startDotId(trackId)];
-  if (dotLayers) dotLayers.day.eachLayer(layer => { if (layer.bringToFront) layer.bringToFront(); });
+  const dimActive = dimmedIds.length > 0;
+  const opacityExpr = dimActive
+    ? ["case", ["in", ["get", "trackId"], ["literal", dimmedIds]], FULL_TRACK_OPACITY, DIMMED_TRACK_OPACITY]
+    : FULL_TRACK_OPACITY;
+  TRACKS_DIM_LAYER_IDS.forEach(id => state.map.setPaintProperty(id, "line-opacity", opacityExpr));
+  // The whole active trip repaints on top of the (now-dimmed) rest of the
+  // map via tracks-overlay-trip; whichever track is actually
+  // selected/hovered repaints highest of all, at the thicker weight, via
+  // tracks-overlay-selected -- together the direct replacement for the old
+  // bringTrackToFront-based DOM reordering, since MapLibre has no
+  // per-feature draw order within a single layer to reorder.
+  renderOverlayTrip();
+  renderOverlaySelected();
 }
 
 // A trip's tracks are always drawn oldest-day-on-top (so a later/further
 // day's line never buries the earlier one where they overlap). Returns
 // tracks in bottom-to-top drawing order (last element ends up on top).
+// Still used by app.js to decide build/registration order; the tracks
+// themselves no longer have any real draw-order to control beyond that
+// (see updateTrackDimming) since MapLibre draws per-layer, not per-feature.
 export function tripTrackDrawOrder(trip) {
   return [...trip.tracks].reverse();
 }
@@ -978,54 +1151,35 @@ export function poiRank(trip, poiIndex) {
   return trip.pois.length - 1 - poiIndex;
 }
 
-// Transient per-track halo shown only while hovering that track (any run
-// of it, or its casing) -- exactly the persistent selection's look, just
-// cleared on mouseout instead of sticking around.
+// Transient per-track halo shown only while hovering that track -- exactly
+// the persistent selection's look, just cleared on mouseout instead of
+// sticking around. Always the active trip's own track (see
+// setupTrackEventHandlers/clusters.js's isActiveTrip() branch) -- narrows
+// the persistent selection halo/weight down to just the hovered track,
+// whether or not a specific day was already picked, so the rest of the
+// trip visibly steps back and the hovered day gets the same weight-5
+// treatment the real selection would.
 export function showTrackHoverHighlight(trackId) {
-  if (!state.hoverHighlight) state.hoverHighlight = L.layerGroup().addTo(state.map);
-  state.hoverHighlight.clearLayers();
-  const halo = trackHaloLayer(trackId, SELECTION_HIGHLIGHT_WEIGHT);
-  if (halo) halo.addTo(state.hoverHighlight);
-  bringTrackToFront(trackId);
-  // This is always the active trip's own track (see attachTrackHandlers/
-  // clusters.js's isActiveTrip() branch) -- narrows the persistent
-  // selection halo/weight down to just the hovered track, whether or not
-  // a specific day was already picked, so the rest of the trip visibly
-  // steps back and the hovered day gets the same weight-5 treatment the
-  // real selection would.
   state.hoveredTrackId = trackId;
-  renderSelectionHalo([trackId]);
+  renderSelectionHalo(currentHaloIds());
   updateTrackDimming();
 }
 // Same, but for every track of a whole trip at once -- used when hovering
 // a track that isn't (yet) the active trip's own, so the halo *and*
 // weight-5 line previews "clicking this selects the trip" rather than
-// pretending to single out just the one day under the cursor.
+// pretending to single out just the one day under the cursor. Unlike
+// showTrackHoverHighlight, this never narrows/replaces the persistent
+// selection halo (there's no "this trip's own selection" to narrow from at
+// this level) -- see currentHaloIds.
 export function showTripHoverHighlight(tripId) {
-  if (!state.hoverHighlight) state.hoverHighlight = L.layerGroup().addTo(state.map);
-  state.hoverHighlight.clearLayers();
-  const trip = state.tripById[tripId];
-  trip.tracks.forEach(track => {
-    const halo = trackHaloLayer(track.id, SELECTION_HIGHLIGHT_WEIGHT);
-    if (halo) halo.addTo(state.hoverHighlight);
-  });
-  // Bring to front oldest-day-last (see tripTrackDrawOrder), so day 1 ends
-  // up on top of the rest of this trip's own tracks, same as everywhere else.
-  tripTrackDrawOrder(trip).forEach(track => bringTrackToFront(track.id));
   state.hoveredTripId = tripId;
+  renderSelectionHalo(currentHaloIds());
   updateTrackDimming();
 }
 export function clearTrackHoverHighlight() {
-  if (state.hoverHighlight) state.hoverHighlight.clearLayers();
-  // Restore the full-trip halo narrowed by showTrackHoverHighlight, if any.
-  if (state.hoveredTrackId) {
-    state.hoveredTrackId = null;
-    renderSelectionHalo(persistentHaloTrackIds());
-  }
+  state.hoveredTrackId = null;
   state.hoveredTripId = null;
-  // Hovering briefly raised some other track above the current
-  // selection -- once the hover ends, restore the selected trip/day back
-  // on top.
+  renderSelectionHalo(currentHaloIds());
   updateTrackDimming();
 }
 
@@ -1052,6 +1206,32 @@ export function categoryPercents(tracks, keyFn) {
   const percents = {};
   for (const key in totals) percents[key] = total > 0 ? (totals[key] / total) * 100 : 0;
   return percents;
+}
+
+// One icon per POI, created once and never swapped: `setIcon()` replaces
+// the marker's DOM node, which can desync Leaflet's hover listeners from
+// the new element and leave a pin stuck open. Instead both the resting dot
+// and the full signpost pin are always in the DOM, and a "highlighted" CSS
+// class on the (stable) icon element -- set when opened -- decides which
+// one is visible.
+export function poiMarkerIcon(poi, color) {
+  const glyph = poiIconHtml(poi);
+  return L.divIcon({
+    className: "poi-marker",
+    html: `
+      <div style="--poi-color: ${color}">
+        <div class="poi-marker-dot"><span class="poi-dot-glyph">${glyph}</span></div>
+        <div class="poi-divicon">
+          <div class="poi-divicon-outer"></div>
+          <div class="poi-divicon-inner"></div>
+          <span class="poi-glyph">${glyph}</span>
+        </div>
+      </div>
+    `,
+    iconSize: [42, 48],
+    iconAnchor: [21, 48],
+    popupAnchor: [0, -48],
+  });
 }
 
 // Builds the divIcon for a trip/day marker, shown (like POIs) only while
@@ -1192,58 +1372,110 @@ export function tripMarkerTooltipHtml(trip, dayNumber, dateIso, activity, poiLis
   </div>`;
 }
 
-// Every trip/track/marker hover tooltip on the map shares this single
-// L.tooltip instance instead of each layer binding its own -- with dozens
-// of colored track segments all bound separately, moving the mouse across
-// segment boundaries could leave the previous segment's tooltip fading out
-// while the next one fades in, showing a visible ghost/trace. Reusing one
-// instance and just repositioning + rewriting its content sidesteps that.
-const HOVER_TOOLTIP_CLOSE_DELAY_MS = 100;
-const HOVER_TOOLTIP_FADE_MS = 100;
+// ---- Track hover -> tooltip + chart sync, and click -> drill down ----
+//
+// One delegated set of handlers on the shared "tracks-hit" layer, wired
+// once from initTrackLayers, replaces the old per-track Leaflet listener
+// bindings (attachTrackHandlers) -- MapLibre only fires one mousemove/click
+// per *layer*, not per feature, so state.hoveredHitTrackId tracks "which
+// feature is the cursor currently over" by hand, the same job Leaflet's
+// per-object mouseover/mouseout used to do for free.
+//
+// Which level hover/click act on follows the trip that's currently active
+// (if any), not just the track's own trip: for the active trip's own
+// tracks, hovering/clicking always targets that specific track/day -- it's
+// the one already drilled into, so there's nowhere shallower to go. For
+// every other track -- including any/all of them at the "all trips" level,
+// where no trip is active yet -- hovering/clicking targets the whole trip
+// instead, since jumping straight to one of its days would skip the trip
+// overview entirely.
 
-function clearHoverTooltipTimers() {
-  if (state.hoverTooltipCloseTimer) { clearTimeout(state.hoverTooltipCloseTimer); state.hoverTooltipCloseTimer = null; }
-  if (state.hoverTooltipRemoveTimer) { clearTimeout(state.hoverTooltipRemoveTimer); state.hoverTooltipRemoveTimer = null; }
+// Shared by every hoverable track surface -- the map hit-line (below) and
+// the start/end trip markers (clusters.js) -- so "hovering this track
+// previews/confirms its selection halo and shows its day tooltip" is
+// implemented exactly once. Either `trackId` (narrows the halo to just
+// this track) or `tripId` (previews the whole trip) is given, matching
+// showTrackHoverHighlight/showTripHoverHighlight's own split.
+export function beginTrackHover(latlng, tooltipHtml, tooltipOpts, { trackId, tripId } = {}) {
+  if (trackId) showTrackHoverHighlight(trackId);
+  else if (tripId) showTripHoverHighlight(tripId);
+  state.hoverTooltipOnLayer = true;
+  showHoverTooltip(latlng, tooltipHtml, tooltipOpts);
 }
-export function showHoverTooltip(latlng, html, opts) {
-  // Cancel any pending close/fade from a moment ago -- e.g. crossing straight
-  // from one track segment into the next shouldn't restart the tooltip.
-  clearHoverTooltipTimers();
-  state.hoverTooltipAnchor = latlng;
-  if (!state.hoverTooltip) {
-    state.hoverTooltip = L.tooltip(opts).setLatLng(latlng).setContent(html);
-    state.hoverTooltip.addTo(state.map);
-  } else {
-    state.hoverTooltip.options.direction = opts.direction;
-    state.hoverTooltip.options.offset = opts.offset;
-    state.hoverTooltip.options.sticky = !!opts.sticky;
-    state.hoverTooltip.setContent(html);
-    state.hoverTooltip.setLatLng(latlng);
-    if (!state.map.hasLayer(state.hoverTooltip)) state.hoverTooltip.addTo(state.map);
-  }
-  state.hoverTooltipFading = false;
-  // Leaflet's own tooltip default (0.9) gets reasserted on every addTo(),
-  // so force it back to fully opaque rather than relying on CSS to win
-  // against that inline style.
-  state.hoverTooltip.setOpacity(1);
+export function endTrackHover() {
+  clearTrackHoverHighlight();
+  state.hoverTooltipOnLayer = false;
+  hideHoverTooltip();
 }
-export function moveHoverTooltip(latlng) {
-  // Once the fade-out has started the tooltip is on its way out, so it
-  // should hold still rather than hop to wherever the mouse ends up next.
-  if (state.hoverTooltip && !state.hoverTooltipFading) {
-    state.hoverTooltip.setLatLng(latlng);
-  }
+
+function setupTrackEventHandlers(map) {
+  const isActiveTrip = (tripId) => state.activeTripId === tripId;
+  // mousemove fires far more often than the screen can repaint, and the
+  // handler's own work (re-syncing the elevation chart's active point,
+  // which triggers a full Chart.js redraw) is too heavy to redo on every
+  // single event -- doing so made the tooltip visibly lag behind the
+  // cursor. Coalescing to one flush per animation frame keeps only the
+  // latest position and matches the actual paint rate.
+  let pendingLngLat = null, pendingCtx = null, rafScheduled = false;
+  const flushMouseMove = () => {
+    rafScheduled = false;
+    if (!pendingLngLat) return;
+    const lngLat = pendingLngLat, ctx = pendingCtx;
+    pendingLngLat = null;
+    perfMark("map.hitline.tooltip", () => moveHoverTooltip(closestPointOnPolyline(lngLat, ctx.track.points)));
+    perfMark("map.hitline.onTrackHover", () => onTrackHover(ctx.trip, ctx.track, lngLat));
+  };
+  map.on("mouseenter", "tracks-hit", () => { map.getCanvas().style.cursor = "pointer"; });
+  map.on("mouseleave", "tracks-hit", () => {
+    map.getCanvas().style.cursor = "";
+    pendingLngLat = null;
+    if (state.hoveredHitTrackId) {
+      state.hoveredHitTrackId = null;
+      endTrackHover();
+      clearChartHover();
+    }
+  });
+  map.on("mousemove", "tracks-hit", (e) => {
+    const trackId = e.features[0].properties.trackId;
+    const entry = state.trackById[trackId];
+    if (!entry) return;
+    const { trip, track } = entry;
+    const lngLat = { lat: e.lngLat.lat, lng: e.lngLat.lng };
+    if (state.hoveredHitTrackId !== trackId) {
+      if (state.hoveredHitTrackId) { endTrackHover(); clearChartHover(); }
+      state.hoveredHitTrackId = trackId;
+      const tooltipHtml = tripMarkerTooltipHtml(trip, trackSidebarDayNumber(track), track.start_t, track.activity);
+      const tooltipOpts = trackTooltipOpts(-10, true);
+      beginTrackHover(closestPointOnPolyline(lngLat, track.points), tooltipHtml, tooltipOpts, isActiveTrip(trip.id) ? { trackId } : { tripId: trip.id });
+    }
+    pendingLngLat = lngLat;
+    pendingCtx = { trip, track };
+    if (!rafScheduled) {
+      rafScheduled = true;
+      requestAnimationFrame(flushMouseMove);
+    }
+  });
+  map.on("click", "tracks-hit", (e) => {
+    const trackId = e.features[0].properties.trackId;
+    const entry = state.trackById[trackId];
+    if (!entry) return;
+    const { trip, track } = entry;
+    if (isActiveTrip(trip.id)) selectDay(trip.id, track.id, { recenter: false });
+    else selectTrip(trip.id, { recenter: false });
+  });
 }
-export function hideHoverTooltip() {
-  if (!state.hoverTooltip) return;
-  clearHoverTooltipTimers();
-  state.hoverTooltipCloseTimer = setTimeout(() => {
-    state.hoverTooltipFading = true;
-    state.hoverTooltip.setOpacity(0);
-    state.hoverTooltipRemoveTimer = setTimeout(() => {
-      state.map.removeLayer(state.hoverTooltip);
-    }, HOVER_TOOLTIP_FADE_MS);
-  }, HOVER_TOOLTIP_CLOSE_DELAY_MS);
+
+export function buildDayLayers(trip, track) {
+  return {
+    points: track.points,
+    tripId: trip.id,
+    tripColor: trip._color,
+    activity: track.activity,
+    isStartDot: false,
+    bounds: computeBounds(track.points),
+    featuresByMode: {},
+    _currentMode: "trip",
+  };
 }
 
 // Virtual track id for a track's start-dot companion (see buildStartDotLayers).
@@ -1253,32 +1485,126 @@ export function startDotId(trackId) {
 
 // A plain dot at every track's own start (including day 1's, unlike the
 // per-day activity-start cluster markers above, which skip day 1) -- built
-// as a degenerate one-point "track" (both endpoints the same latlng) fed
+// as a degenerate one-point "track" (both endpoints the same point) fed
 // through the exact same casing+colored-line styling as any real track, so
 // a round line cap renders it as a dot with no dot-specific styling code.
 // Registered in state.dayLayers like any other track so dimming picks it up
-// for free (see dimmedTrackIds); non-interactive since it's purely a visual
-// anchor, not a hoverable/clickable day.
+// for free (see dimmedTrackIds); isStartDot keeps it out of the hit layer
+// (non-interactive, purely a visual anchor) and out of the dashed layers
+// (always plain solid, see buildTripModeFeatures).
 export function buildStartDotLayers(trip, track) {
   const p = track.points[0];
-  const latlngs = [[p.lat, p.lon], [p.lat, p.lon]];
-  const casing = L.polyline(latlngs, { color: "#f7f2e4", weight: TRACK_CASING_WEIGHT, opacity: 1, interactive: false });
-  const line = L.polyline(latlngs, { color: trip._color, weight: TRACK_WEIGHT, opacity: 1, interactive: false });
-  line._trackLineWeight = TRACK_WEIGHT;
-  return { day: L.layerGroup([casing, line]), mainLine: line, segmentGroups: {} };
+  const points = [p, p];
+  return {
+    points,
+    tripId: trip.id,
+    tripColor: trip._color,
+    activity: track.activity,
+    isStartDot: true,
+    bounds: [[p.lon, p.lat], [p.lon, p.lat]],
+    featuresByMode: {},
+    _currentMode: "trip",
+  };
+}
+
+// Every trip/track/marker hover tooltip on the map shares this single
+// absolutely-positioned DOM div instead of each layer binding its own --
+// with dozens of colored track segments all bound separately, moving the
+// mouse across segment boundaries could leave the previous segment's
+// tooltip fading out while the next one fades in, showing a visible
+// ghost/trace. Reusing one instance and just repositioning + rewriting its
+// content sidesteps that. Positioned via map.project() rather than a
+// MapLibre Popup, which isn't designed for this high-frequency a
+// reposition; kept deliberately minimal here (basic box styling inline,
+// via .map-hover-tooltip in css/map-markers.css) -- the compound
+// `.leaflet-tooltip.trip-marker-tooltip-wrap` rule still targets Leaflet's
+// own tooltip DOM and needs retargeting/removing once Leaflet itself is
+// gone (see the CSS-update phase of the migration plan).
+const HOVER_TOOLTIP_CLOSE_DELAY_MS = 100;
+const HOVER_TOOLTIP_FADE_MS = 100;
+
+function clearHoverTooltipTimers() {
+  if (state.hoverTooltipCloseTimer) { clearTimeout(state.hoverTooltipCloseTimer); state.hoverTooltipCloseTimer = null; }
+  if (state.hoverTooltipRemoveTimer) { clearTimeout(state.hoverTooltipRemoveTimer); state.hoverTooltipRemoveTimer = null; }
+}
+function ensureHoverTooltipEl() {
+  if (!state.hoverTooltipEl) {
+    const el = document.createElement("div");
+    el.className = "map-hover-tooltip";
+    document.getElementById("mapWrap").appendChild(el);
+    state.hoverTooltipEl = el;
+  }
+  return state.hoverTooltipEl;
+}
+function positionHoverTooltip(latlng, opts) {
+  if (!state.map) return;
+  const p = state.map.project([latlng.lng, latlng.lat]);
+  const offset = (opts && opts.offset) || [0, 0];
+  const el = state.hoverTooltipEl;
+  el.style.left = `${p.x}px`;
+  el.style.top = `${p.y}px`;
+  // Approximates Leaflet's direction:"top" (every call site in this app
+  // uses "top") -- anchors the box's bottom-center at the point, nudged by
+  // the caller's own offset.
+  el.style.transform = `translate(calc(-50% + ${offset[0]}px), calc(-100% + ${offset[1]}px))`;
+}
+export function showHoverTooltip(latlng, html, opts) {
+  // Cancel any pending close/fade from a moment ago -- e.g. crossing straight
+  // from one track segment into the next shouldn't restart the tooltip.
+  clearHoverTooltipTimers();
+  state.hoverTooltipAnchor = latlng;
+  state.hoverTooltipOpts = opts;
+  const el = ensureHoverTooltipEl();
+  el.className = `map-hover-tooltip ${opts.className || ""}`;
+  el.innerHTML = html;
+  el.style.display = "block";
+  el.style.opacity = "1";
+  positionHoverTooltip(latlng, opts);
+  state.hoverTooltipFading = false;
+}
+export function moveHoverTooltip(latlng) {
+  // Once the fade-out has started the tooltip is on its way out, so it
+  // should hold still rather than hop to wherever the mouse ends up next.
+  // Reuses the offset/direction from the last showHoverTooltip() call --
+  // otherwise every mousemove would snap the box back to a zero offset,
+  // only ever showing the real -10px-above-cursor placement on the very
+  // first mouseover.
+  if (state.hoverTooltipEl && !state.hoverTooltipFading) {
+    state.hoverTooltipAnchor = latlng;
+    positionHoverTooltip(latlng, state.hoverTooltipOpts || {});
+  }
+}
+export function hideHoverTooltip() {
+  if (!state.hoverTooltipEl) return;
+  clearHoverTooltipTimers();
+  state.hoverTooltipCloseTimer = setTimeout(() => {
+    state.hoverTooltipFading = true;
+    state.hoverTooltipEl.style.opacity = "0";
+    state.hoverTooltipRemoveTimer = setTimeout(() => {
+      state.hoverTooltipEl.style.display = "none";
+    }, HOVER_TOOLTIP_FADE_MS);
+  }, HOVER_TOOLTIP_CLOSE_DELAY_MS);
 }
 
 export function showHoverMarker(lat, lon) {
-  if (!state.hoverMarker) {
-    state.hoverMarker = L.circleMarker([lat, lon], {
-      pane: "hoverPointPane", interactive: false,
-      radius: 6, color: "#fbf4e5", weight: 2, fillColor: "#d79a1e", fillOpacity: 1,
-    }).addTo(state.map);
-  } else {
-    state.hoverMarker.setLatLng([lat, lon]);
-    if (!state.map.hasLayer(state.hoverMarker)) state.hoverMarker.addTo(state.map);
-  }
+  state.map.getSource("tracks-hover-point").setData({ type: "Feature", geometry: { type: "Point", coordinates: [lon, lat] } });
+  state.map.setLayoutProperty("tracks-hover-point", "visibility", "visible");
 }
 export function clearMapHover() {
-  if (state.hoverMarker) state.map.removeLayer(state.hoverMarker);
+  if (state.map.getLayer("tracks-hover-point")) state.map.setLayoutProperty("tracks-hover-point", "visibility", "none");
+}
+
+// The map-side half of the Esplora-dati legend's click-to-highlight (see
+// setLegendSelect/clearLegendSelect in chart.js): a white halo + colored
+// overlay over just the segments matching the selected category.
+export function setLegendSelectSegments(segments, color) {
+  const features = segments.map(([a, b]) => ({
+    type: "Feature",
+    properties: { color },
+    geometry: { type: "LineString", coordinates: [[a[1], a[0]], [b[1], b[0]]] },
+  }));
+  state.map.getSource("tracks-legend-select").setData({ type: "FeatureCollection", features });
+}
+export function clearLegendSelectSegments() {
+  state.map.getSource("tracks-legend-select").setData(emptyFeatureCollection());
 }

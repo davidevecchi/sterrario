@@ -10,7 +10,10 @@ import {
 } from "./colors.js";
 import { fmtKmRound, fmtM, fmtDuration, fmtDateRange } from "./format.js";
 import { poiIconHtml, poiIcoName, drawIcoPath, icoHtml } from "./poi-icons.js";
-import { visibleTracks, showHoverMarker, clearMapHover, segmentColorForMode, LEGEND_HIGHLIGHT_WIDTH, LEGEND_HIGHLIGHT_HALO_WIDTH } from "./map-layers.js";
+import {
+  visibleTracks, showHoverMarker, clearMapHover, segmentColorForMode, LEGEND_HIGHLIGHT_WIDTH, LEGEND_HIGHLIGHT_HALO_WIDTH,
+  setLegendSelectSegments, clearLegendSelectSegments,
+} from "./map-layers.js";
 import { openPoiByIndex } from "./poi.js";
 import { openPhoto } from "./photos.js";
 import { selectDay, selectAll, selectTrip } from "./selection.js";
@@ -288,15 +291,10 @@ function setMapLegendSelect(type, key, color) {
     }
   });
   if (!segments.length) return;
-  const group = L.layerGroup([
-    L.polyline(segments, { color: "#f7f2e4", weight: LEGEND_HIGHLIGHT_HALO_WIDTH, opacity: 0.95 }),
-    L.polyline(segments, { color, weight: LEGEND_HIGHLIGHT_WIDTH, opacity: 1 }),
-  ]);
-  group.addTo(state.map);
-  state.mapLegendSelectHighlight = group;
+  setLegendSelectSegments(segments, color);
 }
 function clearMapLegendSelect() {
-  if (state.mapLegendSelectHighlight) { state.map.removeLayer(state.mapLegendSelectHighlight); state.mapLegendSelectHighlight = null; }
+  clearLegendSelectSegments();
 }
 
 export function setLegendSelect(type, key, color) {

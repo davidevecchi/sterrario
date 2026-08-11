@@ -10,8 +10,11 @@ export const state = {
   tripSortDir: -1,       // 1 = ascending, -1 = descending; flips on re-clicking the active sort
   activeTripId: null,     // null = "All Trips" level
   activeDayId: null,      // null = whole-trip view for activeTripId ("Trip" level); set = "Track" level
-  dayLayers: {},         // trackId -> { day: L.layerGroup, surface: L.layerGroup, mainLine }
-                          // also holds a "<trackId>-start" entry per track, the degenerate
+  dayLayers: {},         // trackId -> { points, tripId, tripColor, activity, isStartDot, bounds,
+                          //              featuresByMode, _currentMode } -- plain data backing the
+                          // shared MapLibre tracks-casing/tracks-line/etc sources (see
+                          // initTrackLayers in map-layers.js), not a Leaflet layer anymore.
+                          // Also holds a "<trackId>-start" entry per track, the degenerate
                           // one-point track rendering its start dot (see buildStartDotLayers)
   chartDayRanges: null,  // Map<dayIndex, {start, end}> index ranges into chartPoints
   poiMarkers: {},        // tripId -> [markers] parallel to trip.pois -- sparse: a POI
@@ -26,23 +29,20 @@ export const state = {
                           // used by updateClusterVisibility to toggle markers individually.
   poisVisible: true,     // headbar toggle -- on top of the trip-scoping in updateClusterVisibility
   startsVisible: true,   // headbar toggle -- on top of the trip-scoping in updateClusterVisibility
+  globeActive: false,    // headbar toggle -- MapLibre projection, "mercator" (flat) vs "globe"
   leftoverPhotosByTrip: {},    // tripId -> photo entries the 30m start/POI pass didn't claim
                                 // (see buildTripClusters) -- re-clustered by on-screen pixel
                                 // distance on every zoom/pan, see buildPhotoPixelClusters.
   photoClusterGroupsByTrip: {}, // tripId -> L.layerGroup of that trip's leftover-photo pixel
                                  // clusters, rebuilt from scratch on zoom/pan and whenever the
                                  // trip becomes active -- see rebuildPhotoClusterLayer.
-  mapLegendSelectHighlight: null, // temporary layer group for the clicked-legend-item highlight (see setLegendSelect in chart.js -- named "select" since it's click-triggered, not hover-triggered)
-  selectionHighlight: null, // persistent white halo under the charted track(s)
-  hoverHighlight: null,  // transient white halo under whichever track is currently hovered
   hoveredTrackId: null,  // track the persistent selection halo/stroke is narrowed to while hovering it (see showTrackHoverHighlight)
   hoveredTripId: null,   // trip whose every track gets the halo/weight-5 preview while hovering one of its tracks on a different (or no) active trip (see showTripHoverHighlight)
-  prevChartedTrackIds: [],  // last set applyColorMode acted on -- lets it only touch tracks whose
-                             // charted/uncharted status actually flipped instead of every track
-  prevDimmingTrackIds: [],  // last (dimmed ∪ selected) set updateTrackDimming acted on, same reason
-  prevDimActive: false,  // whether dimming was active last time updateTrackDimming ran -- when this
-                          // flips, every track must be walked since tracks outside the old and new
-                          // dimmed/selected sets still need their opacity flipped too
+  hoveredHitTrackId: null, // trackId currently under the cursor on the shared tracks-hit layer --
+                            // MapLibre only fires one delegated mousemove per layer, not per
+                            // feature, so this is how the handler notices "the cursor moved onto a
+                            // different track" and re-fires begin/endTrackHover (see
+                            // setupTrackEventHandlers in map-layers.js)
   activePoiTripId: null,
   selectedPoiIndex: -1,
   navTripId: null,       // milestone-nav context: which trip/list/position is shown
@@ -52,8 +52,10 @@ export const state = {
   poiSignTooltip: null,  // fixed (non-hover) L.tooltip pinned over the selected POI, see showMilestone
   chart: null,
   chartPoints: [],       // unified array backing whatever is currently charted
-  hoverMarker: null,
-  hoverTooltip: null,   // single shared L.tooltip reused for every track/marker hover
+  hoverTooltipEl: null,   // single shared absolutely-positioned DOM div reused for every
+                           // track/marker hover tooltip (see showHoverTooltip in map-layers.js)
+  hoverTooltipAnchor: null, // {lat,lng} the tooltip is currently pinned to, re-projected on every map move
+  hoverTooltipOpts: null, // {direction, offset, className, sticky} from the last showHoverTooltip() call, reused by moveHoverTooltip/the "move" reprojection so the offset doesn't reset on every mousemove
   hoverTooltipCloseTimer: null,
   hoverTooltipRemoveTimer: null,
   hoverTooltipFading: false,

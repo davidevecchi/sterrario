@@ -13,6 +13,7 @@
    whatever was tapped -- without this it'd paint a fat dark stripe along the
    20px-wide hit-line shape on every tap. */
 #map .leaflet-interactive { -webkit-tap-highlight-color: transparent; }
+#map canvas { -webkit-tap-highlight-color: transparent; }
 
 /* Manual re-fit control, top-right of the map itself (mirrors Leaflet's own
    zoom control sitting top-left) -- needed now that clicking a track/marker
@@ -538,6 +539,28 @@
   transition: opacity 0.1s linear;
 }
 .leaflet-tooltip-top.trip-marker-tooltip-wrap::before { border-top-color: var(--border-strong); }
+
+/* MapLibre-era replacement for the .leaflet-tooltip.trip-marker-tooltip-wrap
+   rule above (see showHoverTooltip in js/map-layers.js) -- a plain
+   absolutely-positioned div, not a Leaflet tooltip, so it needs its own box
+   styling rather than relying on leaflet.css's base .leaflet-tooltip rule.
+   Deliberately minimal placeholder box styling; no directional arrow yet --
+   the rule above (and Leaflet itself) gets removed once every other phase
+   of the MapLibre migration lands, at which point this can absorb the
+   trip-marker-tooltip-wrap accent styling directly instead of duplicating it. */
+.map-hover-tooltip {
+  position: absolute;
+  display: none;
+  pointer-events: none;
+  z-index: 20;
+  background: var(--sign-white);
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  padding: 8px 12px;
+  box-shadow: 2px 2px 0 var(--shadow-color);
+  white-space: normal;
+  transition: opacity 0.1s linear;
+}
 .trip-marker-tooltip { font-family: var(--font-body); font-size: 12px; line-height: 1.35; text-align: center; color: var(--text); }
 .tmt-trip {
   font-family: var(--font-display);
