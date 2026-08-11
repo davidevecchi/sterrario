@@ -38,11 +38,11 @@
    photo-count badge on top -- all three purely decorative, so (like
    .trip-marker's own scale-on-hover children) they get pointer-events:none
    to keep hover/click hit-testing on the marker's own outer icon box. */
-/* No position here: this class lands on the same element as Leaflet's own
-   .leaflet-marker-icon (position: absolute, from leaflet.css), which is
-   what Leaflet's transform-based marker placement depends on -- redeclaring
-   position here (even to "relative") would win on source order and silently
-   break every cluster marker's positioning. */
+/* No position here: this class lands on the same element MapLibre's own
+   .maplibregl-marker rule (position: absolute, from maplibre-gl.css) is
+   applied to, which is what MapLibre's transform-based marker placement
+   depends on -- redeclaring position here (even to "relative") would win
+   on source order and silently break every cluster marker's positioning. */
 .cluster-marker { width: 44px; height: 44px; }
 .cluster-marker > div { position: relative; width: 100%; height: 100%; }
 

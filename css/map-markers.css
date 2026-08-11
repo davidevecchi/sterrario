@@ -12,7 +12,6 @@
    touch browsers still flash their default tap-highlight overlay over
    whatever was tapped -- without this it'd paint a fat dark stripe along the
    20px-wide hit-line shape on every tap. */
-#map .leaflet-interactive { -webkit-tap-highlight-color: transparent; }
 #map canvas { -webkit-tap-highlight-color: transparent; }
 
 /* Manual re-fit control, top-right of the map itself (mirrors Leaflet's own
@@ -173,30 +172,12 @@
   font-weight: 600;
 }
 
-/* While Leaflet's zoom animation is running, every zoom-animated pane is
-   scaled with a CSS transform rather than actually redrawn at the new
-   coordinates (leaflet.css's `.leaflet-zoom-anim .leaflet-zoom-animated`
-   transition) -- that transform scales the already-rendered hit-lines'
-   pixel width right along with the map, so the "fixed" 20px click/hover
-   margin balloons or shrinks with the zoom level for the transition's
-   ~250ms. vector-effect: non-scaling-stroke doesn't help here since the
-   scaling happens after rendering, at the compositor level. Simplest fix:
-   stop hit-testing entirely for that brief window, so no interaction ever
-   sees the distorted margin -- normal hit-testing resumes the instant the
-   real redraw at the new zoom lands and the class is removed. */
-/* !important: leaflet.css's own `.leaflet-pane > svg path.leaflet-interactive`
-   rule (two elements + two classes) otherwise outweighs this selector's
-   specificity and would win regardless of stylesheet order. */
-.leaflet-zoom-anim .leaflet-interactive { pointer-events: none !important; }
-
-
 /* A POI marker always contains BOTH the resting dot and the full signpost pin
    in the DOM at once; only one is ever shown, chosen with a plain CSS class
    toggled on the (never-replaced) icon element -- "highlighted" when opened.
-   This avoids swapping icons via Leaflet's `setIcon()`, which replaces the
-   DOM node and can desync hover listeners from it, leaving a pin stuck open.
-   `.poi-marker` is the class Leaflet itself puts on that icon element (via
-   the divIcon's `className`). */
+   This avoids rebuilding the marker's element in place, which could desync
+   hover listeners from it, leaving a pin stuck open. `.poi-marker` is the
+   className buildMarkerIcon (js/map-layers.js) puts on that icon element. */
 .poi-marker { position: relative; width: 42px; height: 48px; }
 
 .poi-marker-dot {
@@ -524,30 +505,18 @@
     0 0 0 9px var(--marker-color);
 }
 
-/* Hover tooltip for a trip/day sign, restyled off Leaflet's plain white
-   default to match the app's parchment/signpost look: trip name (accented
-   in the trip's own color), roman-numeral day, date, and activity with a
-   double-size icon (which way a day heads is shown by the marker's own
-   triangle shape on the map instead of duplicated here). */
-.leaflet-tooltip.trip-marker-tooltip-wrap {
-  background: var(--sign-white);
-  border: 1px solid var(--border-strong);
-  border-radius: 4px;
-  padding: 8px 12px;
-  box-shadow: 2px 2px 0 var(--shadow-color);
-  white-space: normal;
-  transition: opacity 0.1s linear;
-}
-.leaflet-tooltip-top.trip-marker-tooltip-wrap::before { border-top-color: var(--border-strong); }
-
-/* MapLibre-era replacement for the .leaflet-tooltip.trip-marker-tooltip-wrap
-   rule above (see showHoverTooltip in js/map-layers.js) -- a plain
-   absolutely-positioned div, not a Leaflet tooltip, so it needs its own box
-   styling rather than relying on leaflet.css's base .leaflet-tooltip rule.
-   Deliberately minimal placeholder box styling; no directional arrow yet --
-   the rule above (and Leaflet itself) gets removed once every other phase
-   of the MapLibre migration lands, at which point this can absorb the
-   trip-marker-tooltip-wrap accent styling directly instead of duplicating it. */
+/* Hover tooltip for a trip/day sign (and the pinned POI signpost, which
+   reuses the same class -- see showHoverTooltip/showPinnedTooltip in
+   js/map-layers.js): trip name (accented in the trip's own color),
+   roman-numeral day, date, and activity with a double-size icon (which way
+   a day heads is shown by the marker's own triangle shape on the map
+   instead of duplicated here). A plain absolutely-positioned div, not a
+   Leaflet tooltip -- positioned via a `translate(-50%, -100%)` that puts
+   the box's own bottom-center at the anchor point (every call site in this
+   app uses Leaflet's old `direction: "top"` convention), so the arrow
+   below is anchored to the box's bottom edge, not to the map coordinate
+   directly -- it moves together with whatever per-call-site offset shifts
+   the box itself, the same relationship Leaflet's own tooltip arrow had. */
 .map-hover-tooltip {
   position: absolute;
   display: none;
@@ -560,6 +529,16 @@
   box-shadow: 2px 2px 0 var(--shadow-color);
   white-space: normal;
   transition: opacity 0.1s linear;
+}
+.map-hover-tooltip::after {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  margin-bottom: -12px;
+  margin-left: -6px;
+  border: 6px solid transparent;
+  border-top-color: var(--border-strong);
+  content: "";
 }
 .trip-marker-tooltip { font-family: var(--font-body); font-size: 12px; line-height: 1.35; text-align: center; color: var(--text); }
 .tmt-trip {
