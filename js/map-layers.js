@@ -1534,11 +1534,7 @@ export function buildStartDotLayers(trip, track) {
 // ghost/trace. Reusing one instance and just repositioning + rewriting its
 // content sidesteps that. Positioned via map.project() rather than a
 // MapLibre Popup, which isn't designed for this high-frequency a
-// reposition; kept deliberately minimal here (basic box styling inline,
-// via .map-hover-tooltip in css/map-markers.css) -- the compound
-// `.leaflet-tooltip.trip-marker-tooltip-wrap` rule still targets Leaflet's
-// own tooltip DOM and needs retargeting/removing once Leaflet itself is
-// gone (see the CSS-update phase of the migration plan).
+// reposition; styled via .map-hover-tooltip in css/map-markers.css.
 const HOVER_TOOLTIP_CLOSE_DELAY_MS = 100;
 const HOVER_TOOLTIP_FADE_MS = 100;
 
