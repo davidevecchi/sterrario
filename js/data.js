@@ -1,6 +1,6 @@
 export async function loadTrips() {
   const res = await fetch("data/.generated/trips.json");
-  return (await res.json()).trips;
+  return await res.json();
 }
 
 export async function loadPhotos() {

@@ -142,6 +142,7 @@
   font-family: var(--font-display);
 }
 .chart-tooltip-title { font-weight: 600; }
+.chart-tooltip-title .msym { font-size: 16px; --msym-opsz: 20; vertical-align: -3px; }
 .chart-tooltip-ele { font-weight: 700; color: var(--accent); white-space: nowrap; }
 .chart-tooltip-body { margin-top: 4px; }
 .chart-tooltip-line {

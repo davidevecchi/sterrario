@@ -1,14 +1,14 @@
 // ---- Sidebar: zoomable trips/days timeline, breadcrumb, legend, timeline strip ----
 
 import { state } from "./state.js";
-import { sampleArray, tripAllPoints, trackGradeSeries, trackCategorySeries, trackSidebarDayNumber } from "./geo.js";
+import { sampleArray, tripAllPoints, trackGradeSeries, trackCategorySeries, trackSidebarDayNumber, exploreScopeTracks, tracksEleMinMax } from "./geo.js";
 import {
   SURFACE_COLORS, SURFACE_FALLBACK, SURFACE_LABELS, HIGHWAY_COLORS, HIGHWAY_FALLBACK,
-  HIGHWAY_LABELS, GRADE_BUCKETS, gradeColor, ACTIVITY_LABELS, ACTIVITY_COLORS, dayIconHtml, activityTallyHtml,
+  HIGHWAY_LABELS, GRADE_BUCKETS, gradeColor, altitudeBucket, buildAltitudeLegendBuckets, ACTIVITY_LABELS, ACTIVITY_COLORS, dayIconHtml, activityTallyHtml,
 } from "./colors.js";
 import { fmtKmRound, fmtM, fmtDuration, fmtDate, fmtDateRange, toRoman, realDayNumber } from "./format.js";
 import { categoryPercents, visibleTracks } from "./map-layers.js";
-import { setLegendHover, clearLegendHover } from "./chart.js";
+import { setLegendSelect, clearLegendSelect } from "./chart.js";
 import { selectAll, selectTrip, selectDay } from "./selection.js";
 
 // Three selection levels, always derivable from activeTripId/activeDayId
@@ -153,11 +153,10 @@ export function renderPicker() {
       const li = document.createElement("li");
       li.className = "timeline-row" + (state.activeDayId === track.id ? " active" : "");
       li.innerHTML = `
-        <div class="tl-thumb" style="color:${trip._color}">${routeThumbnailSvg(track.points)}</div>
+        <div class="tl-thumb tl-thumb-icon">${dayIconHtml(track)}</div>
         <div class="tl-main">
-          <div class="tl-title">${dayIconHtml(track)} ${track._dayNumber}. Giorno ${toRoman(realDayNumber(trip.summary.start_t, track.start_t) ?? trackSidebarDayNumber(track))}, ${fmtDate(track.start_t, false)} <span class="tl-title-activity">– ${ACTIVITY_LABELS[track.activity] || track.activity}</span></div>
+          <div class="tl-title">${track._dayNumber}. Giorno ${toRoman(realDayNumber(trip.summary.start_t, track.start_t) ?? trackSidebarDayNumber(track))}, ${fmtDate(track.start_t, false)} <span class="tl-title-activity">– ${ACTIVITY_LABELS[track.activity] || track.activity}</span></div>
           <div class="tl-stats tl-stats-day">${fmtKmRound(track.distance_m)} · +${fmtM(track.ele_gain, false)}/-${fmtM(track.ele_loss)} · ${fmtDuration(track.duration_s)}</div>
-          <div class="tl-spark" style="color:${trip._color}">${sparklineSvg(track.points)}</div>
         </div>
         <div class="tl-leaf" title="Seleziona questa tappa">●</div>`;
       li.addEventListener("click", () => {
@@ -244,23 +243,11 @@ function legendItemRows(items, { sortByPct = true, dropZero = true } = {}) {
 // selected -- the one active day, the active trip's tracks, or (nothing
 // selected) every track on the map -- rather than always the full map, so
 // its percentages match what the halo/dimming is actually pointing at.
-function exploreScopeTracks() {
-  if (state.activeDayId) {
-    const trip = state.tripById[state.activeTripId];
-    const track = trip && trip.tracks.find(t => t.id === state.activeDayId);
-    if (track) return [track];
-  } else if (state.activeTripId) {
-    const trip = state.tripById[state.activeTripId];
-    if (trip) return trip.tracks;
-  }
-  return visibleTracks();
-}
-
 function renderLegend(mode) {
   const el = document.getElementById("modeLegend");
   el.classList.toggle("legend-readonly", !state.activeTripId);
 
-  const tracks = exploreScopeTracks();
+  const tracks = exploreScopeTracks(visibleTracks());
 
   if (mode === "trip") {
     const activityPct = categoryPercents(tracks, track => track.activity || "other");
@@ -284,8 +271,25 @@ function renderLegend(mode) {
   const gradePct = categoryPercents(tracks, (track, i) => gradeColor(trackGradeSeries(track)[i]));
   const gradientHtml = `
     <div class="legend-group-title">Pendenza</div>
-    <div class="legend-grade-pcts">${legendItemRows(GRADE_BUCKETS.map(b => ({
+    <div class="legend-grade-pcts">${legendItemRows([...GRADE_BUCKETS].reverse().map(b => ({
       color: b.color, label: b.label, pct: gradePct[b.color] || 0, type: "gradient", key: b.color,
+    })), { sortByPct: false, dropZero: false })}</div>`;
+
+  // Scoped to whatever's currently selected (the one active day, the active
+  // trip's tracks, or every track at the "all trips" level) -- see
+  // tracksEleMinMax -- so the legend only lists rows this selection
+  // actually reaches, instead of always listing the full global range's
+  // rows even for a single flat day. The color scale itself still comes
+  // from the global 99.5th-percentile elevation (state.eleRange.p995, see
+  // buildAltitudeLegendBuckets) so a given altitude's color never depends
+  // on what's selected.
+  const scopedEleRange = tracksEleMinMax(tracks);
+  state.altitudeLegendBuckets = buildAltitudeLegendBuckets(scopedEleRange.min, scopedEleRange.max, state.eleRange.p995);
+  const altitudePct = categoryPercents(tracks, (track, i) => altitudeBucket(track.points[i].ele, state.altitudeLegendBuckets)?.color);
+  const altimetryHtml = `
+    <div class="legend-group-title">Altimetria</div>
+    <div class="legend-grade-pcts">${legendItemRows(state.altitudeLegendBuckets.map(b => ({
+      color: b.color, label: b.label, pct: altitudePct[b.color] || 0, type: "altimetry", key: b.color,
     })), { sortByPct: false, dropZero: false })}</div>`;
 
   const highways = new Set();
@@ -300,9 +304,10 @@ function renderLegend(mode) {
   el.innerHTML = mode === "surface" ? surfaceHtml
     : mode === "highway" ? highwayHtml
     : mode === "gradient" ? gradientHtml
-    : surfaceHtml + highwayHtml + gradientHtml;
+    : mode === "altimetry" ? altimetryHtml
+    : surfaceHtml + highwayHtml + gradientHtml + altimetryHtml;
 
-  // setMapLegendHover always overlays the match across every visible
+  // setMapLegendSelect always overlays the match across every visible
   // track (see chart.js), which only reads as "this category, within the
   // current selection" once a trip is actually selected -- at the "all
   // trips" level there's no selection for it to scope to, so skip wiring
@@ -315,10 +320,10 @@ function renderLegend(mode) {
       const wasActive = item.classList.contains("active");
       el.querySelectorAll(".legend-item.active").forEach(i => i.classList.remove("active"));
       if (wasActive) {
-        clearLegendHover();
+        clearLegendSelect();
       } else {
         item.classList.add("active");
-        setLegendHover(item.dataset.legendType, item.dataset.legendKey, item.dataset.legendColor);
+        setLegendSelect(item.dataset.legendType, item.dataset.legendKey, item.dataset.legendColor);
       }
     });
   });

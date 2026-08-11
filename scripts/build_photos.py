@@ -74,11 +74,26 @@ def dms_string_to_decimal(s):
     return value
 
 
-def read_xmp_sidecar(path):
-    """Look for an exiftool-written .xmp sidecar (e.g. photo.jpg.xmp) next to
-    path and return (lat, lon) or None, and dt or None, from it."""
-    sidecar = path.with_name(path.name + ".xmp")
-    if not sidecar.exists():
+def find_xmp_sidecar(path, search_root):
+    """Look for an exiftool-written .xmp sidecar (e.g. photo.jpg.xmp)
+    anywhere under search_root (the photo's trip subfolder), not just next
+    to path -- some exports (e.g. a batch exiftool run) drop every sidecar
+    into its own subfolder like "xmp/" instead of alongside the original.
+    If more than one file with that name turns up, the shallowest one
+    (fewest path parts below search_root) wins, since a deeper nested
+    match is more likely a stray duplicate than the "real" sidecar."""
+    matches = sorted(
+        search_root.rglob(path.name + ".xmp"),
+        key=lambda p: len(p.relative_to(search_root).parts),
+    )
+    return matches[0] if matches else None
+
+
+def read_xmp_sidecar(path, search_root):
+    """Return (lat, lon) or None, and dt or None, from path's .xmp sidecar
+    (see find_xmp_sidecar), or (None, None) if it has none."""
+    sidecar = find_xmp_sidecar(path, search_root)
+    if sidecar is None:
         return None, None
 
     try:
@@ -105,7 +120,7 @@ def read_xmp_sidecar(path):
     return coords, dt
 
 
-def read_gps_and_time(path):
+def read_gps_and_time(path, search_root):
     try:
         img = Image.open(path)
         exif = img.getexif()
@@ -131,7 +146,7 @@ def read_gps_and_time(path):
 
     coords = (lat, lon) if lat is not None and lon is not None else None
 
-    sidecar_coords, sidecar_dt = read_xmp_sidecar(path)
+    sidecar_coords, sidecar_dt = read_xmp_sidecar(path, search_root)
     coords = sidecar_coords or coords
     dt = sidecar_dt or dt
 
@@ -258,6 +273,15 @@ def top_level_folder(path, originals_dir):
     return rel.parts[0] if len(rel.parts) > 1 else None
 
 
+def photo_search_root(path, originals_dir):
+    """Directory to search for path's .xmp sidecar (see find_xmp_sidecar) --
+    its trip subfolder (originals/<gpx-basename>/), so a sidecar tucked in
+    e.g. an "xmp/" sub-subfolder is still found, without searching across
+    unrelated trips' own photos of the same filename."""
+    name = top_level_folder(path, originals_dir)
+    return (originals_dir / name) if name else originals_dir
+
+
 def find_trip_by_folder(folder_name, trips):
     """Match a photo's containing subfolder (e.g. originals/<gpx-basename>/)
     against a trip's gpx filename stem, the same scheme import_photo_zips
@@ -319,7 +343,7 @@ def import_photo_zips(photos_dir, originals_dir, trips):
 
 
 def process_photo(path, thumbs_dir, display_dir, trips, originals_dir):
-    coords, dt = read_gps_and_time(path)
+    coords, dt = read_gps_and_time(path, photo_search_root(path, originals_dir))
     folder_trip = find_trip_by_folder(top_level_folder(path, originals_dir), trips)
     trip_id, day_id = find_day(trips, dt, folder_trip)
 

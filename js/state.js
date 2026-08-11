@@ -26,11 +26,23 @@ export const state = {
                           // used by updateClusterVisibility to toggle markers individually.
   poisVisible: true,     // headbar toggle -- on top of the trip-scoping in updateClusterVisibility
   startsVisible: true,   // headbar toggle -- on top of the trip-scoping in updateClusterVisibility
-  mapLegendHighlight: null, // temporary layer group for legend-item hover
+  leftoverPhotosByTrip: {},    // tripId -> photo entries the 30m start/POI pass didn't claim
+                                // (see buildTripClusters) -- re-clustered by on-screen pixel
+                                // distance on every zoom/pan, see buildPhotoPixelClusters.
+  photoClusterGroupsByTrip: {}, // tripId -> L.layerGroup of that trip's leftover-photo pixel
+                                 // clusters, rebuilt from scratch on zoom/pan and whenever the
+                                 // trip becomes active -- see rebuildPhotoClusterLayer.
+  mapLegendSelectHighlight: null, // temporary layer group for the clicked-legend-item highlight (see setLegendSelect in chart.js -- named "select" since it's click-triggered, not hover-triggered)
   selectionHighlight: null, // persistent white halo under the charted track(s)
   hoverHighlight: null,  // transient white halo under whichever track is currently hovered
   hoveredTrackId: null,  // track the persistent selection halo/stroke is narrowed to while hovering it (see showTrackHoverHighlight)
-  hoveredPoiMarker: null,
+  hoveredTripId: null,   // trip whose every track gets the halo/weight-5 preview while hovering one of its tracks on a different (or no) active trip (see showTripHoverHighlight)
+  prevChartedTrackIds: [],  // last set applyColorMode acted on -- lets it only touch tracks whose
+                             // charted/uncharted status actually flipped instead of every track
+  prevDimmingTrackIds: [],  // last (dimmed ∪ selected) set updateTrackDimming acted on, same reason
+  prevDimActive: false,  // whether dimming was active last time updateTrackDimming ran -- when this
+                          // flips, every track must be walked since tracks outside the old and new
+                          // dimmed/selected sets still need their opacity flipped too
   activePoiTripId: null,
   selectedPoiIndex: -1,
   navTripId: null,       // milestone-nav context: which trip/list/position is shown
@@ -47,6 +59,13 @@ export const state = {
   hoverTooltipFading: false,
   hoverTooltipOnLayer: false,   // true while the cursor is actually over the track/marker that opened it
   map: null,
+
+  eleRange: { min: 0, max: 0 },   // global elevation min/max across every trip -- computed
+                                   // build-time (global_ele_stats in build_trips.py), loaded
+                                   // via ele_stats in main() (app.js). Fixed once at startup
+                                   // so the altimetry color scale never shifts per selection.
+  altitudeBuckets: [],     // fine 100m render bands, built from eleRange -- see buildAltitudeBuckets (colors.js)
+  altitudeLegendBuckets: [], // coarser <=10-row legend bands -- see buildAltitudeLegendBuckets (colors.js)
 
   photosByTrip: {},       // tripId -> photos[], each sorted by time
   photosVisible: true,

@@ -2,18 +2,19 @@
 
 import { state } from "./state.js";
 import {
-  trackGradeSeries, trackCategorySeries, tripGradeMinMax, nearestPointOnTrack,
+  trackGradeSeries, trackCategorySeries, tripGradeMinMax, nearestPointOnTrack, exploreScopeTracks,
 } from "./geo.js";
 import {
   SURFACE_COLORS, SURFACE_FALLBACK, SURFACE_LABELS, HIGHWAY_COLORS, HIGHWAY_FALLBACK,
-  HIGHWAY_LABELS, gradeColor, dayIconHtml,
+  HIGHWAY_LABELS, gradeColor, altitudeBucket, dayIconHtml,
 } from "./colors.js";
 import { fmtKmRound, fmtM, fmtDuration, fmtDateRange } from "./format.js";
-import { poiIconGlyph } from "./poi-icons.js";
-import { visibleTracks, showHoverMarker, clearMapHover, LEGEND_HIGHLIGHT_WIDTH, LEGEND_HIGHLIGHT_HALO_WIDTH } from "./map-layers.js";
+import { poiIconHtml, poiIcoName, drawIcoPath, icoHtml } from "./poi-icons.js";
+import { visibleTracks, showHoverMarker, clearMapHover, segmentColorForMode, LEGEND_HIGHLIGHT_WIDTH, LEGEND_HIGHLIGHT_HALO_WIDTH } from "./map-layers.js";
 import { openPoiByIndex } from "./poi.js";
 import { openPhoto } from "./photos.js";
 import { selectDay, selectAll, selectTrip } from "./selection.js";
+import { perfMark } from "./perf-debug.js";
 
 const OFFTRACK_THRESHOLD_M = 1500;
 
@@ -168,28 +169,51 @@ function chartHoverIndex(chart) {
   return el ? el.index : null;
 }
 
+// The one predicate behind every "does this point belong to the
+// hovered/selected legend category" check -- on the chart it's called
+// directly against a chartPoint; on the map (setMapLegendSelect below)
+// it's called against a plain {surface, highway, grade, ele} descriptor
+// built from the track's own per-point series, so both ends of the same
+// legend-select interaction always agree on what counts as a match.
 function legendCategoryMatches(type, key, p) {
   if (type === "surface") return (p.surface || "unknown") === key;
   if (type === "highway") return (p.highway || "unknown") === key;
   if (type === "gradient") return gradeColor(p.grade || 0) === key;
+  if (type === "altimetry") return altitudeBucket(p.ele, state.altitudeLegendBuckets)?.color === key;
   return false;
 }
+
+// The line dataset's segment.backgroundColor callback (below) needs
+// chartHoverIndex() to decide whether a given segment touches the hovered
+// point -- but Chart.js invokes that callback once per segment, and the
+// hovered index is the same for the whole draw. Calling chartHoverIndex()
+// (which calls chart.getActiveElements()) freshly inside every one of a
+// multi-thousand-segment whole-trip chart's segment callbacks, every single
+// draw, is the same "redone thousands of times per frame" problem
+// computeChartColors above was written to avoid -- so it's cached here once
+// per draw instead, same fix.
+const hoverIndexCachePlugin = {
+  id: "hoverIndexCache",
+  beforeDatasetsDraw(chart) {
+    chart._cachedHoverIdx = chartHoverIndex(chart);
+  },
+};
 
 const legendHighlightPlugin = {
   id: "legendHighlight",
   afterDatasetsDraw(chart) {
     const opts = chart.options.plugins && chart.options.plugins.legendHighlight;
     const chartPoints = opts && opts.chartPoints;
-    const hover = chart._legendHover;
+    const hover = chart._legendSelect;
     if (!chartPoints || !hover) return;
 
-    const ownColor = segmentColorFn(chartPoints);
+    const ownColors = chart._chartColors || [];
     const segments = [];
     let needsHalo = false;
     for (let i = 0; i < chartPoints.length - 1; i++) {
       if (!legendCategoryMatches(hover.type, hover.key, chartPoints[i])) continue;
       segments.push(i);
-      if (ownColor({ p0DataIndex: i, p1DataIndex: i + 1 }) !== hover.color) needsHalo = true;
+      if ((ownColors[i] || "#888") !== hover.color) needsHalo = true;
     }
     if (!segments.length) return;
 
@@ -228,33 +252,38 @@ const legendHighlightPlugin = {
   },
 };
 
-function setChartLegendHover(type, key, color) {
+// Despite the "hover" name lingering in the older map/chart variable
+// names below, this is actually click-triggered from the Esplora-dati
+// legend (see sidebar.js's renderLegend) -- clicking a legend row
+// toggles it selected/deselected, it doesn't track the mouse. Named
+// "select" rather than "hover" throughout to match the real trigger.
+function setChartLegendSelect(type, key, color) {
   if (!state.chart) return;
-  state.chart._legendHover = { type, key, color };
+  state.chart._legendSelect = { type, key, color };
   state.chart.draw();
 }
-function clearChartLegendHover() {
+function clearChartLegendSelect() {
   if (!state.chart) return;
-  state.chart._legendHover = null;
+  state.chart._legendSelect = null;
   state.chart.draw();
 }
 
 // Same idea on the map: a white halo + colored overlay drawn only over the
-// segments of the currently-visible tracks that match the hovered legend
-// category, as a temporary layer removed again on mouseleave.
-function legendMapMatches(type, key, track, pointIndex) {
-  if (type === "surface") return (trackCategorySeries(track, "surface")[pointIndex] || "unknown") === key;
-  if (type === "highway") return (trackCategorySeries(track, "highway")[pointIndex] || "unknown") === key;
-  if (type === "gradient") return gradeColor(trackGradeSeries(track)[pointIndex]) === key;
-  return false;
-}
-
-function setMapLegendHover(type, key, color) {
-  clearMapLegendHover();
+// segments of the currently-visible tracks that match the selected legend
+// category, as a temporary layer removed again on deselect. Reuses the
+// exact same legendCategoryMatches predicate as the chart, fed a
+// descriptor built from the track's own per-point series instead of a
+// chartPoint, so map and chart can never disagree on what counts as a match.
+function setMapLegendSelect(type, key, color) {
+  clearMapLegendSelect();
   const segments = [];
-  visibleTracks().forEach(track => {
+  exploreScopeTracks(visibleTracks()).forEach(track => {
+    const surfaces = trackCategorySeries(track, "surface");
+    const highways = trackCategorySeries(track, "highway");
+    const grades = trackGradeSeries(track);
     for (let i = 1; i < track.points.length; i++) {
-      if (!legendMapMatches(type, key, track, i - 1)) continue;
+      const descriptor = { surface: surfaces[i - 1], highway: highways[i - 1], grade: grades[i - 1], ele: track.points[i - 1].ele };
+      if (!legendCategoryMatches(type, key, descriptor)) continue;
       segments.push([[track.points[i - 1].lat, track.points[i - 1].lon], [track.points[i].lat, track.points[i].lon]]);
     }
   });
@@ -264,19 +293,19 @@ function setMapLegendHover(type, key, color) {
     L.polyline(segments, { color, weight: LEGEND_HIGHLIGHT_WIDTH, opacity: 1 }),
   ]);
   group.addTo(state.map);
-  state.mapLegendHighlight = group;
+  state.mapLegendSelectHighlight = group;
 }
-function clearMapLegendHover() {
-  if (state.mapLegendHighlight) { state.map.removeLayer(state.mapLegendHighlight); state.mapLegendHighlight = null; }
+function clearMapLegendSelect() {
+  if (state.mapLegendSelectHighlight) { state.map.removeLayer(state.mapLegendSelectHighlight); state.mapLegendSelectHighlight = null; }
 }
 
-export function setLegendHover(type, key, color) {
-  setChartLegendHover(type, key, color);
-  setMapLegendHover(type, key, color);
+export function setLegendSelect(type, key, color) {
+  setChartLegendSelect(type, key, color);
+  setMapLegendSelect(type, key, color);
 }
-export function clearLegendHover() {
-  clearChartLegendHover();
-  clearMapLegendHover();
+export function clearLegendSelect() {
+  clearChartLegendSelect();
+  clearMapLegendSelect();
 }
 
 const poiIconHoverPlugin = {
@@ -292,7 +321,6 @@ const poiIconHoverPlugin = {
     const point = meta.data[el.index];
     if (!point) return;
     const { x, y } = point;
-    const glyph = poiIconGlyph(p);
 
     const { ctx } = chart;
     ctx.save();
@@ -303,10 +331,8 @@ const poiIconHoverPlugin = {
     ctx.lineWidth = 1.5;
     ctx.strokeStyle = "#ab2328";
     ctx.stroke();
-    ctx.font = "16px 'Material Symbols Outlined', sans-serif";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText(glyph, x, y - 16);
+    ctx.fillStyle = "#ab2328";
+    drawIcoPath(ctx, poiIcoName(p), x, y - 16, 16);
     ctx.restore();
   },
 };
@@ -332,10 +358,8 @@ const photoIconHoverPlugin = {
     ctx.lineWidth = 1.5;
     ctx.strokeStyle = "#1f4d47";
     ctx.stroke();
-    ctx.font = "14px sans-serif";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText("📷", x, y - 16);
+    ctx.fillStyle = "#1f4d47";
+    drawIcoPath(ctx, "photo_camera", x, y - 16, 16);
     ctx.restore();
   },
 };
@@ -424,17 +448,78 @@ const keyPointsPlugin = {
   },
 };
 
-function segmentColorFn(chartPoints) {
-  return (ctx) => {
-    const p0 = chartPoints[ctx.p0DataIndex];
-    const p1 = chartPoints[ctx.p1DataIndex];
-    if (!p0) return "#888";
-    if (state.colorMode === "surface") return SURFACE_COLORS[p0.surface] || SURFACE_FALLBACK;
-    if (state.colorMode === "highway") return HIGHWAY_COLORS[p0.highway] || HIGHWAY_FALLBACK;
-    if (state.colorMode === "gradient") return gradeColor(p0.grade || 0);
-    return p0.color || "#e01b24";
-  };
+// Same mode-to-color mapping as the map's own buildSegmentGroup, via the
+// shared segmentColorForMode -- covers every mode except "trip" (no
+// segment coloring of its own), which is why the fallback to the trip's
+// own identity color lives here rather than inside the shared function.
+// Resolved once per chartPoints/colorMode (not per segment): Chart.js
+// invokes a segment style callback for every single point on every single
+// draw -- and this line redraws in full on every mousemove (the crosshair
+// plugin has to track the cursor), so for a multi-thousand-point whole-trip
+// chart that's the same gradeColor()/surface-lookup work redone thousands
+// of times per frame. A plain array lookup is the fix; segmentColorForMode
+// itself still only runs once per point here.
+function computeChartColors(chartPoints) {
+  return chartPoints.map(p => segmentColorForMode(state.colorMode, p.surface, p.highway, p.grade, p.ele) || p.color || "#e01b24");
 }
+
+// Groups consecutive same-colored points into runs, exactly like
+// map-layers.js's buildSegmentGroup does for the map's own polylines --
+// feeds borderRunsPlugin below. Computed once per chart build (same
+// lifecycle as computeChartColors' `colors`), not per frame.
+function buildColorRuns(colors) {
+  const runs = [];
+  for (let i = 1; i < colors.length; i++) {
+    const color = colors[i - 1] || "#888";
+    const run = runs[runs.length - 1];
+    if (run && run.color === color) run.end = i;
+    else runs.push({ color, start: i - 1, end: i });
+  }
+  return runs;
+}
+
+// Draws the elevation line's border as one manual canvas stroke per
+// same-color run instead of leaving it to Chart.js's own segment.borderColor
+// -- Chart.js forces a fresh path at every point-to-point color change, so a
+// multi-thousand-point whole-trip chart meant thousands of individual stroke
+// calls on every single redraw (measured ~220ms/frame while hovering, the
+// actual lag). The line dataset itself keeps its border invisible
+// (borderWidth: 0) and only supplies the area fill (which still needs
+// Chart.js's own per-segment backgroundColor for the seamless hover/
+// legend-select highlight -- see legendHighlightPlugin's comment on why a
+// manually-drawn overlay caused seams there); this plugin paints the
+// visible line in its place, on top of that fill (afterDatasetsDraw, same
+// timing the border used to draw in). Runs are precomputed once per chart
+// build (drawChart), not per frame -- they only depend on the color mode.
+// Straight segments between actual data points rather than the dataset's
+// own bezier tension -- same approximation legendHighlightPlugin's overlay
+// already makes, invisible at this point density.
+const borderRunsPlugin = {
+  id: "borderRuns",
+  afterDatasetsDraw(chart) {
+    const opts = chart.options.plugins && chart.options.plugins.borderRuns;
+    const runs = opts && opts.runs;
+    const chartPoints = opts && opts.chartPoints;
+    if (!runs || !chartPoints) return;
+    const { ctx, scales } = chart;
+    ctx.save();
+    ctx.lineWidth = 2;
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    runs.forEach(run => {
+      ctx.strokeStyle = run.color;
+      ctx.beginPath();
+      for (let i = run.start; i <= run.end; i++) {
+        const p = chartPoints[i];
+        const x = scales.x.getPixelForValue(p.distKm);
+        const y = scales.y.getPixelForValue(p.ele);
+        if (i === run.start) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    });
+    ctx.restore();
+  },
+};
 
 // Is this altitude-chart POI point the one currently open in the signpost
 // card? Used to make it stand out on the graph, not just on the map.
@@ -461,13 +546,13 @@ function renderChartTooltip(context, chartPoints, poiPoints, photoPoints) {
   if (dp.dataset.isPoiLayer) {
     const p = poiPoints[dp.dataIndex];
     const poi = state.tripById[p.tripId].pois[p.poiIndex];
-    titleEl.textContent = `${poiIconGlyph(poi)} ${poi.name || "(senza nome)"}`;
+    titleEl.innerHTML = `${poiIconHtml(poi)} ${poi.name || "(senza nome)"}`;
     eleEl.textContent = `${Math.round(dp.parsed.y)} m`;
     bodyEl.innerHTML = "";
   } else if (dp.dataset.isPhotoLayer) {
     const p = photoPoints[dp.dataIndex];
     const photo = state.photosByTrip[p.tripId][p.photoIndex];
-    titleEl.textContent = `📷 ${photo.filename}`;
+    titleEl.innerHTML = `${icoHtml("photo_camera")} ${photo.filename}`;
     eleEl.textContent = `${Math.round(dp.parsed.y)} m`;
     bodyEl.innerHTML = "";
   } else {
@@ -479,6 +564,7 @@ function renderChartTooltip(context, chartPoints, poiPoints, photoPoints) {
       if (p.surface) lines.push({ color: SURFACE_COLORS[p.surface] || SURFACE_FALLBACK, text: `Fondo: ${SURFACE_LABELS[p.surface] || p.surface}` });
       if (p.highway) lines.push({ color: HIGHWAY_COLORS[p.highway] || HIGHWAY_FALLBACK, text: `Tipo: ${HIGHWAY_LABELS[p.highway] || p.highway}` });
       if (p.grade != null) lines.push({ color: gradeColor(p.grade), text: `Pendenza: ${p.grade > 0 ? "+" : ""}${Math.round(p.grade)}%` });
+      if (p.ele != null) lines.push({ color: altitudeBucket(p.ele, state.altitudeBuckets)?.color, text: `Altitudine: ${Math.round(p.ele)} m` });
     }
     bodyEl.innerHTML = lines.map(l => `
       <div class="chart-tooltip-line"><span class="swatch" style="background:${l.color}"></span>${l.text}</div>
@@ -505,8 +591,45 @@ function renderChartTooltip(context, chartPoints, poiPoints, photoPoints) {
   tooltipEl.style.top = `${top}px`;
 }
 
+// The actual per-frame work behind onHover below -- split out so it can be
+// deferred to the next animation frame instead of running once per raw
+// mousemove event.
+function applyChartHover(evt, elements, chart, chartPoints) {
+  // POI/photo hover is tracked separately from Chart's own active-element
+  // state (which "index" mode uses for the line) instead of overwriting it
+  // -- setActiveElements() here would otherwise wipe out the line's hover
+  // tracking on every mousemove that isn't exactly over a marker, breaking
+  // the crosshair/tooltip while hovering the line itself.
+  const hits = chart.getElementsAtEventForMode(evt.native, "nearest", { intersect: true }, false);
+  const poiHits = hits.filter(el => chart.data.datasets[el.datasetIndex].isPoiLayer);
+  const photoHits = hits.filter(el => chart.data.datasets[el.datasetIndex].isPhotoLayer);
+  const boundaryHit = nearestDayBoundary(chart, evt.native.offsetX);
+  chart.canvas.style.cursor = (poiHits.length || photoHits.length || boundaryHit) ? "pointer" : "";
+  chart._hoverPoi = poiHits.length ? poiHits[0] : null;
+  chart._hoverPhoto = photoHits.length ? photoHits[0] : null;
+  if (poiHits.length) {
+    chart.tooltip.setActiveElements(poiHits, { x: evt.native.offsetX, y: evt.native.offsetY });
+  } else if (photoHits.length) {
+    chart.tooltip.setActiveElements(photoHits, { x: evt.native.offsetX, y: evt.native.offsetY });
+  }
+  perfMark("chart.draw", () => chart.draw());
+
+  const lineHit = elements.find(el => {
+    const ds = chart.data.datasets[el.datasetIndex];
+    return !ds.isPoiLayer && !ds.isPhotoLayer;
+  });
+  if (lineHit) {
+    const p = chartPoints[lineHit.index];
+    if (p) showHoverMarker(p.lat, p.lon);
+  } else if (!elements.length) {
+    clearMapHover();
+  }
+}
+
 function drawChart(chartPoints, poiPoints, photoPoints, options) {
   const ctx = document.getElementById("elevationChart").getContext("2d");
+  // Per-chart-instance rAF coalescing state for onHover, see applyChartHover.
+  let pendingHover = null, hoverRafScheduled = false;
   state.chartPoints = chartPoints;
   const dayRanges = new Map();
   chartPoints.forEach((p, i) => {
@@ -521,7 +644,8 @@ function drawChart(chartPoints, poiPoints, photoPoints, options) {
   if (state.chart) state.chart.destroy();
   document.getElementById("chartTooltip").classList.add("hidden");
 
-  const borderColorFn = segmentColorFn(chartPoints);
+  const colors = computeChartColors(chartPoints);
+  const colorRuns = buildColorRuns(colors);
 
   state.chart = new Chart(ctx, {
     type: "line",
@@ -530,27 +654,23 @@ function drawChart(chartPoints, poiPoints, photoPoints, options) {
         {
           data,
           segment: {
-            borderColor: (segCtx) => borderColorFn(segCtx),
             backgroundColor: (segCtx) => {
-              const hover = state.chart && state.chart._legendHover;
+              const base = colors[segCtx.p0DataIndex] || "#888";
+              const hover = state.chart && state.chart._legendSelect;
               if (hover && legendCategoryMatches(hover.type, hover.key, chartPoints[segCtx.p0DataIndex])) {
                 return hover.color + "cc";
               }
-              const hoverIdx = state.chart ? chartHoverIndex(state.chart) : null;
+              const hoverIdx = state.chart ? state.chart._cachedHoverIdx : null;
               if (hoverIdx != null && (segCtx.p0DataIndex === hoverIdx || segCtx.p1DataIndex === hoverIdx)) {
-                return borderColorFn(segCtx) + "cc";
+                return base + "cc";
               }
-              return borderColorFn(segCtx) + "55";
+              return base + "55";
             },
           },
-          borderColor: (c) => borderColorFn({ p0DataIndex: 0, p1DataIndex: 0 }),
-          backgroundColor: (c) => {
-            const base = borderColorFn({ p0DataIndex: 0, p1DataIndex: 0 });
-            return base + "55";
-          },
+          borderWidth: 0,
+          backgroundColor: (colors[0] || "#e01b24") + "55",
           fill: true,
           pointRadius: 0,
-          borderWidth: 2,
           tension: 0.1,
           order: 1,
         },
@@ -592,6 +712,7 @@ function drawChart(chartPoints, poiPoints, photoPoints, options) {
       interaction: { mode: "index", intersect: false },
       plugins: Object.assign({
         legend: { display: false },
+        borderRuns: { runs: colorRuns, chartPoints },
         crosshair: { poiPoints },
         poiIconHover: { poiPoints },
         photoIconHover: { photoPoints },
@@ -599,51 +720,52 @@ function drawChart(chartPoints, poiPoints, photoPoints, options) {
         legendHighlight: { chartPoints },
         tooltip: {
           enabled: false,
-          external: (context) => renderChartTooltip(context, chartPoints, poiPoints, photoPoints),
+          external: (context) => perfMark("chart.tooltip.render", () => renderChartTooltip(context, chartPoints, poiPoints, photoPoints)),
         },
       }, options.plugins || {}),
       scales: {
         x: {
           type: "linear", min: 0, max: xMax, title: { display: true, text: "km", padding: { top: 0, bottom: 0 }, font: { lineHeight: 1 } },
           ticks: { maxTicksLimit: 10 },
+          afterBuildTicks: (axis) => {
+            const ticks = axis.ticks;
+            if (xMax != null && (!ticks.length || ticks[ticks.length - 1].value !== xMax)) {
+              ticks.push({ value: xMax, label: xMax.toFixed(1) });
+            }
+          },
           grid: { display: true, drawOnChartArea: false, drawTicks: true, tickLength: 6, tickColor: "#8a6530" },
         },
         y: {
+          min: data.length ? Math.min(0, Math.round(Math.min(...data.map(p => p.y)))) : undefined,
           title: { display: true, text: "m" },
           grid: { display: true, drawOnChartArea: false, drawTicks: true, tickLength: 6, tickColor: "#8a6530" },
         },
       },
+      // Chart.js invokes onHover for every native mousemove it sees on the
+      // canvas -- no throttling of its own -- and the work below (a
+      // duplicate geometric hit-test, a full canvas redraw via chart.draw(),
+      // plus DOM layout reads in the tooltip and a Leaflet marker sync) is
+      // too heavy to redo for every single one of those: on a fast/high-
+      // polling-rate mouse they arrive faster than the handler can drain
+      // them, so the backlog grows and the redraws fall further and further
+      // behind the real cursor position the longer you keep moving (visible
+      // as growing lag, and as segments flickering into their dim/"55"-alpha
+      // state instead of the bright hover one because the hoverIdx a given
+      // queued redraw sees is already stale by the time it runs). Coalescing
+      // to one flush per animation frame keeps only the latest event and
+      // matches the actual paint rate -- same fix already applied to the
+      // map's own hit-line mousemove in map-layers.js.
       onHover: (evt, elements, chart) => {
-        // POI/photo hover is tracked separately from Chart's own
-        // active-element state (which "index" mode uses for the line)
-        // instead of overwriting it -- setActiveElements() here would
-        // otherwise wipe out the line's hover tracking on every
-        // mousemove that isn't exactly over a marker, breaking the
-        // crosshair/tooltip while hovering the line itself.
-        const hits = chart.getElementsAtEventForMode(evt.native, "nearest", { intersect: true }, false);
-        const poiHits = hits.filter(el => chart.data.datasets[el.datasetIndex].isPoiLayer);
-        const photoHits = hits.filter(el => chart.data.datasets[el.datasetIndex].isPhotoLayer);
-        const boundaryHit = nearestDayBoundary(chart, evt.native.offsetX);
-        chart.canvas.style.cursor = (poiHits.length || photoHits.length || boundaryHit) ? "pointer" : "";
-        chart._hoverPoi = poiHits.length ? poiHits[0] : null;
-        chart._hoverPhoto = photoHits.length ? photoHits[0] : null;
-        if (poiHits.length) {
-          chart.tooltip.setActiveElements(poiHits, { x: evt.native.offsetX, y: evt.native.offsetY });
-        } else if (photoHits.length) {
-          chart.tooltip.setActiveElements(photoHits, { x: evt.native.offsetX, y: evt.native.offsetY });
-        }
-        chart.draw();
-
-        const lineHit = elements.find(el => {
-          const ds = chart.data.datasets[el.datasetIndex];
-          return !ds.isPoiLayer && !ds.isPhotoLayer;
+        pendingHover = { evt, elements };
+        if (hoverRafScheduled) return;
+        hoverRafScheduled = true;
+        requestAnimationFrame(() => {
+          hoverRafScheduled = false;
+          if (!pendingHover) return;
+          const { evt, elements } = pendingHover;
+          pendingHover = null;
+          perfMark("chart.onHover.flush", () => applyChartHover(evt, elements, chart, chartPoints));
         });
-        if (lineHit) {
-          const p = chartPoints[lineHit.index];
-          if (p) showHoverMarker(p.lat, p.lon);
-        } else if (!elements.length) {
-          clearMapHover();
-        }
       },
       onClick: (evt, elements, chart) => {
         const hits = chart.getElementsAtEventForMode(evt.native, "nearest", { intersect: true }, false);
@@ -667,8 +789,13 @@ function drawChart(chartPoints, poiPoints, photoPoints, options) {
         if (boundaryHit) setTimeout(() => selectDay(state.activeTripId, boundaryHit.trackId), 0);
       },
     },
-    plugins: [dayBoundaryPlugin, keyPointsPlugin, legendHighlightPlugin, crosshairPlugin, poiIconHoverPlugin, photoIconHoverPlugin],
+    plugins: [hoverIndexCachePlugin, borderRunsPlugin, dayBoundaryPlugin, keyPointsPlugin, legendHighlightPlugin, crosshairPlugin, poiIconHoverPlugin, photoIconHoverPlugin],
   });
+  // legendHighlightPlugin reads this instead of recomputing colors itself --
+  // it runs on every redraw while a legend entry is hovered, which is
+  // exactly the per-mousemove path computeChartColors was written to stay
+  // out of.
+  state.chart._chartColors = colors;
 }
 
 // Shared by the day-view and whole-trip footer info rows: the same
@@ -769,15 +896,22 @@ export function onTrackHover(trip, track, latlng) {
   const scanStart = range ? range.start : 0;
   const scanEnd = range ? range.end : pts.length - 1;
   let bestIdx = scanStart, bestDist = Infinity;
-  for (let i = scanStart; i <= scanEnd; i++) {
-    const p = pts[i];
-    const d = (p.lat - latlng.lat) ** 2 + (p.lon - latlng.lng) ** 2;
-    if (d < bestDist) { bestDist = d; bestIdx = i; }
-  }
+  perfMark("map.hitline.onTrackHover.scan", () => {
+    for (let i = scanStart; i <= scanEnd; i++) {
+      const p = pts[i];
+      const d = (p.lat - latlng.lat) ** 2 + (p.lon - latlng.lng) ** 2;
+      if (d < bestDist) { bestDist = d; bestIdx = i; }
+    }
+  });
   if (state.chart) {
     state.chart.setActiveElements([{ datasetIndex: 0, index: bestIdx }]);
     state.chart.tooltip.setActiveElements([{ datasetIndex: 0, index: bestIdx }], { x: 0, y: 0 });
-    state.chart.update("none");
+    // draw() (not update()) -- setActiveElements() above already updated the
+    // element state update() would otherwise recompute; update() re-runs
+    // layout/dataset computation on top of that same draw, which measured
+    // ~1.7x slower for no benefit here (see chart.draw vs
+    // map.hitline.onTrackHover.chartUpdate in the perf instrumentation).
+    perfMark("map.hitline.onTrackHover.chartDraw", () => state.chart.draw());
   }
   const p = pts[bestIdx];
   if (p) showHoverMarker(p.lat, p.lon);

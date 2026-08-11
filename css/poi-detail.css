@@ -149,7 +149,7 @@
   border: none;
 }
 #poiDetailBody .poi-title { font-family: var(--font-display); font-weight: 600; font-size: 14px; margin-bottom: 2px; display: flex; align-items: center; gap: 6px; }
-#poiDetailBody .poi-title svg { width: 24px; height: 24px; flex-shrink: 0; fill: currentColor; }
+#poiDetailBody .poi-title .msym { font-size: 24px; --msym-opsz: 40; flex-shrink: 0; }
 #poiDetailBody .poi-cmt { font-size: 12px; color: var(--text-muted); }
 #poiDetailBody .poi-ele { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
 .poi-note-btn {
@@ -163,8 +163,12 @@
   padding: 5px 10px;
   margin: 4px 0;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 .poi-note-btn:hover { filter: brightness(1.08); }
+.poi-note-btn .msym { font-size: 12px; --msym-opsz: 20; }
 
 /* A little paper note, as if pulled from a trip journal. */
 #noteModal {
@@ -206,6 +210,9 @@
   font-size: 15px;
   margin-bottom: 10px;
   padding-right: 16px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
-#noteModalTitle svg { width: 24px; height: 24px; vertical-align: -5px; fill: currentColor; }
+#noteModalTitle .msym { font-size: 24px; --msym-opsz: 40; flex-shrink: 0; }
 #noteModalBody { font-size: 13px; line-height: 1.5; white-space: pre-line; }

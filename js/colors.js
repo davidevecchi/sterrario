@@ -82,21 +82,176 @@ export const HIGHWAY_LABELS = {
   cycleway: "Pista ciclabile", construction: "In costruzione", proposed: "Progetto",
 };
 
-// Gradient (% slope) buckets. Signed (not mirrored): downhill and uphill
-// get distinct colors on one continuous red -> yellow -> green ramp,
-// rather than the same color by steepness alone.
+// Gradient (% slope) buckets, mirrored around 0 into the five categories a
+// cyclist actually feels: flat, easy, moderate, hard, extreme. Flat stays
+// tight (-2/2%, barely perceptible while pedaling); extreme only kicks in
+// past 15% (genuinely brutal); easy/moderate/hard split the wide 2-15%
+// middle at 4% and 8%. Colors are a single OKLCH ramp anchored at three
+// fixed hues (green -> yellow -> red) with every in-between color linearly
+// interpolated in L/C/h, one segment per side of flat, evenly by bucket
+// rank rather than by raw % (the categories, not the numeric midpoints,
+// are what should look evenly spaced). Chroma is pushed high enough that
+// most of these sit right at the sRGB gamut edge -- as saturated as each
+// hue/lightness can get without distorting hue -- so the ramp reads as
+// vivid and contrasty rather than muddy.
 export const GRADE_BUCKETS = [
-  { max: -20, color: "#166534", label: "< -20%" },
-  { max: -10, color: "#16a34a", label: "-20 / -10%" },
-  { max: -3, color: "#65a30d", label: "-10 / -3%" },
-  { max: 3, color: "#eab308", label: "-3 / 3%" },
-  { max: 10, color: "#f97316", label: "3 / 10%" },
-  { max: 20, color: "#dc2626", label: "10 / 20%" },
-  { max: Infinity, color: "#7f1d1d", label: "> 20%" },
-];
+  { max: -16, color: "#007e11", label: "Discesa estrema (< -16%)" },
+  { max: -8, color: "#429400", label: "Discesa dura (-16 / -8%)" },
+  { max: -4, color: "#86a800", label: "Discesa moderata (-8 / -4%)" },
+  { max: -2, color: "#c0bb00", label: "Discesa leggera (-4 / -2%)" },
+  { max: 2, color: "#f8cd00", label: "Pianeggiante (-2 / 2%)" },
+  { max: 4, color: "#f49c00", label: "Salita leggera (2 / 4%)" },
+  { max: 8, color: "#e76a00", label: "Salita moderata (4 / 8%)" },
+  { max: 16, color: "#d13100", label: "Salita dura (8 / 16%)" },
+  { max: Infinity, color: "#b30000", label: "Salita estrema (> 16%)" },
+]
 export function gradeColor(grade) {
   for (const b of GRADE_BUCKETS) if (grade <= b.max) return b.color;
   return GRADE_BUCKETS[GRADE_BUCKETS.length - 1].color;
+}
+
+// Classic cartographic hypsometric tint: blue-green (valleys) -> green ->
+// yellow-green -> tan -> brown -> gray-brown -> white (peaks). This is the
+// standard elevation scale used on topo/hiking maps -- unlike a general
+// terrain colormap it has no ocean/bathymetry segment, which fits this app
+// since trail elevations never go below sea level; the lowest band just
+// leans bluish rather than starting from a full ocean blue.
+const TERRAIN_STOPS = [
+  [0.00, 0.10, 0.32, 0.62],
+  [0.15, 0.08, 0.46, 0.52],
+  [0.25, 0.16, 0.52, 0.20],
+  [0.40, 0.64, 0.70, 0.10],
+  [0.60, 0.82, 0.55, 0.10],
+  [0.80, 0.55, 0.33, 0.16],
+  [0.88, 0.60, 0.44, 0.36],
+  [0.94, 0.75, 0.65, 0.58],
+  [0.98, 0.87, 0.83, 0.79],
+  [1.00, 0.93, 0.91, 0.87],
+];
+function rgbToHex(r, g, b) {
+  const c = (v) => Math.round(Math.max(0, Math.min(1, v)) * 255).toString(16).padStart(2, "0");
+  return `#${c(r)}${c(g)}${c(b)}`;
+}
+function terrainColor(t) {
+  t = Math.max(0, Math.min(1, t));
+  for (let i = 1; i < TERRAIN_STOPS.length; i++) {
+    const [p0, r0, g0, b0] = TERRAIN_STOPS[i - 1];
+    const [p1, r1, g1, b1] = TERRAIN_STOPS[i];
+    if (t <= p1) {
+      const f = p1 === p0 ? 0 : (t - p0) / (p1 - p0);
+      return rgbToHex(r0 + (r1 - r0) * f, g0 + (g1 - g0) * f, b0 + (b1 - b0) * f);
+    }
+  }
+  const last = TERRAIN_STOPS[TERRAIN_STOPS.length - 1];
+  return rgbToHex(last[1], last[2], last[3]);
+}
+
+// Altitude (elevation) coloring: unlike slope, elevation has no universal
+// fixed scale, so the colormap spans 0 (never the *global* min, which can be
+// negative or just an arbitrary trip's valley) to the 99.5th-percentile
+// elevation across every trip (computed build-time, see global_ele_stats in
+// build_trips.py and main() in app.js) -- fixed at startup so the same altitude never reads
+// as a different color depending on what's currently selected. Using the
+// 99.5th percentile rather than the raw max keeps a single brief high peak
+// from stretching the whole ramp and squashing every normal trip into its
+// low end. Below 0 still hard-clamps to the color of 0 (negative elevations
+// don't happen on real trails, so there's nothing to distinguish). Above the
+// 99.5th-percentile ceiling, though, softly eases towards (never quite
+// reaching) the ramp's terminal color instead of hard-clamping flat: a hard
+// clamp would make every point/band past the ceiling render pixel-identical,
+// which reads as a visual glitch/flat block rather than "very high" -- and,
+// for the legend, would force collapsing multiple bands into one
+// mismatched-width row just to avoid showing several identical swatches.
+// Easing keeps every altitude visually distinct (data coherence) while still
+// achieving the percentile clamp's actual goal (no single peak stretching
+// the ramp for every other trip), so one bucket-building path now works
+// unmodified for both the legend and the map/chart render bands.
+// The linear 0..colorMax range only ever fills the ramp up to T_CAP, not all
+// the way to 1 -- reserving that last sliver of the ramp is what gives the
+// easing above colorMax somewhere to go. Without it, the linear part would
+// already sit at the ramp's exact terminal color at colorMax, so anything
+// beyond would have to jump backwards before it could "ease forward" again
+// -- a visible reverse color jump right at the ceiling, worse than a flat
+// clamp.
+const ALTITUDE_EASE_T_CAP = 0.94;
+function altitudeColor(ele, max) {
+  if (ele == null || !max) return SURFACE_FALLBACK;
+  const raw = Math.max(0, ele) / max;
+  const t = raw <= 1
+    ? raw * ALTITUDE_EASE_T_CAP
+    : ALTITUDE_EASE_T_CAP + (1 - ALTITUDE_EASE_T_CAP) * (1 - 1 / (1 + (raw - 1) * 2));
+  return terrainColor(t);
+}
+
+// Bands of fixed `step`-wide steps starting at 0 (not a division of the
+// min/max span), so a given band always covers the same altitude range
+// regardless of what's selected. The first band's lower edge is the exact
+// `min` passed in and the last band's upper edge is the exact `max`,
+// instead of overflowing past it to the next round step.
+//
+// `colorMax` is deliberately a separate parameter from `max`: `max` controls
+// which range gets binned (the whole trip set, or just the selected
+// trip/track, so a legend scoped to a flat day doesn't drag in a dozen
+// irrelevant high-altitude rows); `colorMax` is always the *global*
+// 99.5th-percentile elevation across every trip, so a given altitude always
+// maps to the same color band regardless of what's selected/scoped --
+// otherwise the same 800m would tint differently in a legend scoped to an
+// 1800m day than one scoped to a 900m day.
+function buildBands(min, max, step, colorMax = max) {
+  const edges = [];
+  // Fixed multiples of `step` (…, 200, 300, 400, …), not `min`-relative --
+  // that's what keeps a given band's range stable regardless of what's
+  // selected/scoped. But when `min` is scoped to a selection that starts
+  // well above 0 (e.g. a day from 235m to 721m), most of those low
+  // multiples fall below `min` and would produce an invalid edge (upper <
+  // the first band's lower); skipping them makes the first real band start
+  // at whichever multiple is the first one actually above `min`.
+  for (let e = step; e < max; e += step) if (e > min) edges.push(e);
+  edges.push(max);
+  return edges.map((upper, i) => {
+    const lower = i === 0 ? min : edges[i - 1];
+    const color = altitudeColor((lower + upper) / 2, colorMax);
+    const label = `${Math.round(lower)} / ${Math.round(upper)} m`;
+    return { min: lower, max: upper, color, label };
+  });
+}
+// Fine 100m-wide bands used for actual map/chart rendering: narrow enough
+// that the colored line reads as smoothly shaded rather than a handful of
+// visibly flat stripes, while still being a small, fixed set of flat colors
+// -- cheap to compare and, on the map, mergeable into a handful of
+// polylines per track (unlike a genuinely continuous per-point color,
+// which defeats both). Always spans the full global range -- see
+// `colorMax` above for why the color scale itself is never scoped.
+const ALTITUDE_RENDER_STEP = 100;
+export function buildAltitudeBuckets(min, max, colorMax = max) {
+  return buildBands(min, max, ALTITUDE_RENDER_STEP, colorMax);
+}
+// Coarser bands purely for the sidebar legend: reading off 29 rows for a
+// ~3000m trip is worse than reading off 6, so the legend clusters the same
+// span into whichever of 50/100/200/500m keeps it to at most 10 rows,
+// picking the finest (most readable range labels) that fits. `min`/`max`
+// here are meant to be the *scoped* selection's own elevation range (so the
+// legend only lists rows that selection actually reaches), while
+// `colorMax` stays the global 99.5th-percentile elevation so swatches still
+// match the colors actually drawn on the map/chart.
+const ALTITUDE_LEGEND_STEPS = [50, 100, 200, 500];
+const ALTITUDE_LEGEND_MAX_BINS = 10;
+export function buildAltitudeLegendBuckets(min, max, colorMax = max) {
+  for (const step of ALTITUDE_LEGEND_STEPS) {
+    const bands = buildBands(min, max, step, colorMax);
+    if (bands.length <= ALTITUDE_LEGEND_MAX_BINS) return bands;
+  }
+  return buildBands(min, max, ALTITUDE_LEGEND_STEPS[ALTITUDE_LEGEND_STEPS.length - 1], colorMax);
+}
+// Which band a given elevation falls into, against whichever band set is
+// passed in (the fine render bands or the coarser legend bands) -- so a
+// track's rendered color is always one of a handful of flat band colors
+// (mergeable, cheap to compare) rather than a fresh computed shade per
+// point.
+export function altitudeBucket(ele, buckets) {
+  if (ele == null || !buckets || !buckets.length) return null;
+  for (const b of buckets) if (ele <= b.max) return b;
+  return buckets[buckets.length - 1];
 }
 
 // One dash pattern per activity (matching the icons in res/) so days

@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light">
 <title>Sterrario</title>
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
 <link rel="stylesheet" href="js/vendor/leaflet.css">
 <link rel="stylesheet" href="js/vendor/MarkerCluster.css">
 <link rel="stylesheet" href="js/vendor/MarkerCluster.Default.css">
@@ -29,9 +30,9 @@
     <h1 id="tripTitle" title="Torna all'elenco viaggi">Sterrario</h1>
     <nav id="breadcrumb" class="breadcrumb topbar-crumbs"></nav>
     <div class="topbar-toggles" id="topbarToggles">
-      <button type="button" class="topbar-toggle active" id="toggleStarts" aria-pressed="true" title="Mostra/nascondi partenza, arrivo e tappe">🚩</button>
-      <button type="button" class="topbar-toggle active" id="togglePois" aria-pressed="true" title="Mostra/nascondi punti di interesse">📍</button>
-      <button type="button" class="topbar-toggle" id="togglePhotos" aria-pressed="false" title="Mostra/nascondi foto">📷</button>
+      <button type="button" class="topbar-toggle active" id="toggleStarts" aria-pressed="true" title="Mostra/nascondi partenza, arrivo e tappe"></button>
+      <button type="button" class="topbar-toggle active" id="togglePois" aria-pressed="true" title="Mostra/nascondi punti di interesse"></button>
+      <button type="button" class="topbar-toggle" id="togglePhotos" aria-pressed="false" title="Mostra/nascondi foto"></button>
     </div>
   </header>
 
@@ -65,6 +66,7 @@
           <button data-mode="surface">Fondo</button>
           <button data-mode="highway">Tipo strada</button>
           <button data-mode="gradient">Pendenza</button>
+          <button data-mode="altimetry">Altimetria</button>
         </div>
         <div class="explore-note">Consulta la legenda, non cambia il colore reale in mappa</div>
         <div id="modeLegend" class="legend"></div>
@@ -166,6 +168,7 @@
         <button data-mode="surface">Fondo</button>
         <button data-mode="highway">Tipo strada</button>
         <button data-mode="gradient">Pendenza</button>
+        <button data-mode="altimetry">Altimetria</button>
       </div>
       <button id="elevationCollapse" aria-label="Comprimi/espandi">▾</button>
     </div>

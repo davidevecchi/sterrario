@@ -2,9 +2,9 @@
 
 import { state } from "./state.js";
 import { loadTrips, loadPhotos } from "./data.js";
-import { assignTripColors } from "./colors.js";
+import { assignTripColors, buildAltitudeBuckets, buildAltitudeLegendBuckets } from "./colors.js";
 import {
-  initMap, buildDayLayers, buildStartDotLayers, startDotId, tripTrackDrawOrder, recenterMap, recomputeOffsetLines,
+  initMap, buildDayLayers, buildStartDotLayers, startDotId, tripTrackDrawOrder, recenterMap,
 } from "./map-layers.js";
 import { buildTripClusterLayer, updateClusterVisibility } from "./clusters.js";
 import { renderExploreLegend, setExploreLegendMode, TRIP_SORT_DEFAULT_DIR, TRACK_SORT_DEFAULT_DIR, renderPicker, showAllTripsFooter } from "./sidebar.js";
@@ -15,6 +15,7 @@ import {
   clampPresTx, applyPresentationLevel,
 } from "./photos.js";
 import { themeChartDefaults } from "./chart.js";
+import { icoHtml } from "./poi-icons.js";
 
 function wireUi() {
   document.getElementById("sidebarToggle").addEventListener("click", () => {
@@ -22,7 +23,9 @@ function wireUi() {
   });
 
   // The app title doubles as the breadcrumb's root crumb.
-  document.getElementById("tripTitle").addEventListener("click", () => selectAll());
+  const tripTitleEl = document.getElementById("tripTitle");
+  tripTitleEl.insertAdjacentHTML("afterbegin", icoHtml("landscape_2_edit"));
+  tripTitleEl.addEventListener("click", () => selectAll());
 
   document.getElementById("recenterBtn").addEventListener("click", () => recenterMap());
 
@@ -97,25 +100,26 @@ function wireUi() {
   // Headbar layer toggles -- each flips its own boolean and re-runs the
   // matching visibility function, which still layers the trip-scoping
   // (only the active trip's group) on top of the toggle.
-  function wireHeadbarToggle(id, onToggle) {
+  function wireHeadbarToggle(id, icon, onToggle) {
     const btn = document.getElementById(id);
+    btn.innerHTML = icoHtml(icon);
     btn.addEventListener("click", () => {
       const active = onToggle();
       btn.classList.toggle("active", active);
       btn.setAttribute("aria-pressed", String(active));
     });
   }
-  wireHeadbarToggle("toggleStarts", () => {
+  wireHeadbarToggle("toggleStarts", "flag", () => {
     state.startsVisible = !state.startsVisible;
     updateClusterVisibility();
     return state.startsVisible;
   });
-  wireHeadbarToggle("togglePois", () => {
+  wireHeadbarToggle("togglePois", "location_on", () => {
     state.poisVisible = !state.poisVisible;
     updateClusterVisibility();
     return state.poisVisible;
   });
-  wireHeadbarToggle("togglePhotos", () => {
+  wireHeadbarToggle("togglePhotos", "photo_camera", () => {
     setPhotosVisible(!state.photosVisible);
     return state.photosVisible;
   });
@@ -126,7 +130,6 @@ function wireUi() {
   document.getElementById("photoLightboxPrev").addEventListener("click", (e) => {
     e.stopPropagation();
     if (state.selectedPhotoIndex < 0) return;
-    const photos = activePhotos();
     const newIndex = Math.max(0, state.selectedPhotoIndex - 1);
     openPhoto(state.activeTripId, newIndex);
   });
@@ -346,9 +349,12 @@ function wireUi() {
 
 async function main() {
   themeChartDefaults();
-  const trips = await loadTrips();
+  const { trips, ele_stats } = await loadTrips();
   state.trips = trips;
   assignTripColors(trips);
+  state.eleRange = ele_stats;
+  state.altitudeBuckets = buildAltitudeBuckets(state.eleRange.min, state.eleRange.max, state.eleRange.p995);
+  state.altitudeLegendBuckets = buildAltitudeLegendBuckets(state.eleRange.min, state.eleRange.max, state.eleRange.p995);
 
   trips.forEach((trip, i) => {
     trip._buildIndex = i; // matches the trip index `points[*].near` refers to (see build_trips.py)
@@ -409,9 +415,6 @@ async function main() {
   } else {
     map.setView([46, 11], 10);
   }
-  // The map has no zoom until the first setView/fitBounds above -- now
-  // that it does, position every shared-route offset line for real.
-  recomputeOffsetLines();
 }
 
 main();

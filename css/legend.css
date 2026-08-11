@@ -70,8 +70,15 @@
   font-size: 13px;
 }
 .poi-item:hover { background: var(--bg-panel); }
-.poi-item .icon { font-size: 16px; width: 24px; text-align: center; flex-shrink: 0; }
-.poi-item .icon svg { width: 24px; height: 24px; vertical-align: -6px; fill: currentColor; }
+.poi-item .icon {
+  font-size: 16px;
+  width: 24px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.poi-item .icon .msym { font-size: 20px; --msym-opsz: 20; }
 .poi-item .poi-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 #poiListPanel.hidden { display: none; }

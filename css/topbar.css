@@ -77,6 +77,7 @@
   box-shadow: none !important;
 }
 .topbar-toggle.hidden { display: none; }
+.topbar-toggle .msym { font-size: 20px; --msym-opsz: 20; }
 /* Doubles as the breadcrumb's root crumb (click -> back to the trip list).
    Its color is the fixed app brand color regardless of navigation state;
    "current level" is instead cued by the shared .crumb-current underline. */
@@ -94,7 +95,12 @@
   cursor: pointer;
   color: var(--accent);
 }
-#tripTitle::before { content: "⛰ "; }
+/* Stays inline (not flex) so the title's own text-overflow:ellipsis keeps
+   truncating correctly -- vertical-align:middle (not a hand-tuned -Npx
+   offset) is the most deterministic centering available in an inline
+   context, aligning to the text's own middle rather than an eyeballed
+   pixel guess. */
+#tripTitle .msym { font-size: 24px; --msym-opsz: 40; vertical-align: middle; margin-right: 12px; }
 
 /* The breadcrumb now lives in the topbar itself (moved out of the sidebar)
    so "where am I" is answered right next to the app title, one row, no

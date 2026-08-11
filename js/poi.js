@@ -1,7 +1,7 @@
 // ---- POIs: list panel, signpost navigation, note modal ----
 
 import { state } from "./state.js";
-import { poiIconHtml, boundaryIconHtml, stripHashTags } from "./poi-icons.js";
+import { poiIconHtml, boundaryIconHtml, stripHashTags, icoHtml } from "./poi-icons.js";
 import {
   computeTripMilestones, poisForTrack, nearestTrackForPoi, milestoneShortLabel,
   findNextSign, trackSidebarDayNumber,
@@ -93,7 +93,7 @@ export function showMilestone(tripId, milestones, idx, pan) {
     titleHtml = `${poiIconHtml(poi)} ${poi.name || "(senza nome)"}`;
     const note = stripHashTags(poi.cmt || poi.desc || "");
     extraHtml = `
-      ${note ? `<button class="poi-note-btn" id="poiNoteBtn">📝 Leggi la nota</button>` : ""}
+      ${note ? `<button class="poi-note-btn" id="poiNoteBtn">${icoHtml("sticky_note_2")} Leggi la nota</button>` : ""}
       ${poi.ele != null ? `<div class="poi-ele">Altitudine: ${Math.round(poi.ele)} m</div>` : ""}
     `;
     if (pan) state.map.panTo([lat, lon]);

@@ -1,5 +1,21 @@
 // ---- Geometry, distance, track series, and milestone helpers ----
 
+import { state } from "./state.js";
+
+// The tracks the Esplora-dati legend should break down / highlight -- the
+// one active day, the active trip's tracks, or (nothing selected) allTracks.
+export function exploreScopeTracks(allTracks) {
+  if (state.activeDayId) {
+    const trip = state.tripById[state.activeTripId];
+    const track = trip && trip.tracks.find(t => t.id === state.activeDayId);
+    if (track) return [track];
+  } else if (state.activeTripId) {
+    const trip = state.tripById[state.activeTripId];
+    if (trip) return trip.tracks;
+  }
+  return allTracks;
+}
+
 export function haversineM(lat1, lon1, lat2, lon2) {
   const R = 6371000;
   const p1 = lat1 * Math.PI / 180, p2 = lat2 * Math.PI / 180;
@@ -29,13 +45,18 @@ export function nearestPointOnTrack(lat, lon, track) {
   return { alongDist: bestAlong, offDist: bestOff, idx: bestIdx };
 }
 
+// Cached on the poi itself, since a poi belongs to exactly one trip and its
+// nearest track never changes -- avoids redoing an O(tracks x points) scan
+// every time a POI is clicked (showPoiSignTooltip, poisForTrack,
+// computeTripMilestones all call this).
 export function nearestTrackForPoi(trip, poi) {
+  if (poi._nearestTrack) return poi._nearestTrack;
   let best = null;
   trip.tracks.forEach(track => {
     const { alongDist, offDist } = nearestPointOnTrack(poi.lat, poi.lon, track);
     if (!best || offDist < best.offDist) best = { track, alongDist, offDist };
   });
-  return best;
+  return (poi._nearestTrack = best);
 }
 
 // Every POI whose nearest track is this one, in the trip's own POI order
@@ -105,33 +126,16 @@ export function findNextSign(trip, milestones, idx, dir) {
   return null;
 }
 
-const GRADE_SMOOTHING_M = 30; // look-ahead window: raw point-to-point elevation
-// deltas are noisy (consumer GPS elevation can easily be off by 10-50m, so a
-// single bad reading over a couple of meters of travel reads as an absurd
-// grade -- 100%+ spikes); a wider window averages that error away over more
-// distance instead. Computed once per track in a single O(n) pass
-// (two-pointer over the already-distance-sorted points) and cached on the
-// track object, so repeatedly recoloring by gradient (mode switches,
-// re-renders) is free.
+// Smoothed grade (%) per point, precomputed build-time (see GRADE_SMOOTHING_M
+// in build_trips.py) so it doesn't need redoing on every viewer session.
 export function trackGradeSeries(track) {
-  if (track._gradeSeries) return track._gradeSeries;
-  const points = track.points;
-  const n = points.length;
-  const grades = new Array(n).fill(0);
-  let j = 0;
-  for (let i = 0; i < n; i++) {
-    if (j < i) j = i;
-    while (j < n - 1 && points[j].dist - points[i].dist < GRADE_SMOOTHING_M) j++;
-    const distM = points[j].dist - points[i].dist;
-    const e0 = points[i].ele, e1 = points[j].ele;
-    grades[i] = (e0 == null || e1 == null || distM < 1) ? 0 : ((e1 - e0) / distM) * 100;
-  }
-  track._gradeSeries = grades;
-  return grades;
+  return trackCategorySeries(track, "grade");
 }
 
 export function trackCategorySeries(track, field) {
-  return track.points.map((p) => p[field]);
+  const cache = track._catSeries || (track._catSeries = {});
+  if (cache[field]) return cache[field];
+  return (cache[field] = track.points.map((p) => p[field]));
 }
 
 // A track whose start and end sit within 40m of each other is an
@@ -204,6 +208,20 @@ export function sampleArray(arr, maxN) {
 
 export function tripAllPoints(trip) {
   return [].concat(...trip.tracks.map(t => t.points));
+}
+
+// Elevation min/max across just the given tracks -- e.g. for scoping the
+// altimetry legend to whatever's currently selected. Reuses each track's
+// own ele_min/ele_max (already computed build-time, see build_trips.py and
+// their use in chart.js's footer info) rather than re-scanning every point
+// the way globalEleMinMax does, since that full scan is only meant to run
+// once at startup.
+export function tracksEleMinMax(tracks) {
+  if (!tracks.length) return { min: 0, max: 0 };
+  return {
+    min: Math.min(...tracks.map(t => t.ele_min)),
+    max: Math.max(...tracks.map(t => t.ele_max)),
+  };
 }
 
 // Steepest downhill/uphill grade reached anywhere across the trip's tracks

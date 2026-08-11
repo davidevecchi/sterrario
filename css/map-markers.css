@@ -51,6 +51,127 @@
   box-shadow: none;
 }
 
+/* Basemap/overlay switcher (js/map-layers.js's buildLayerSwitcher) -- a
+   plain DOM node, not a Leaflet control, so it's positioned the same way as
+   .map-recenter-btn above rather than through Leaflet's own control
+   container. Stacked below the recenter button at the same top-right
+   corner (its height + gap), two round stamp buttons one above the other,
+   each flying out its own panel to the left on hover -- same paper/stamp
+   look as every other button on the map. */
+.layer-switcher {
+  position: absolute;
+  top: 56px;
+  right: 12px;
+  z-index: 500;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-end;
+}
+.layer-switcher-group {
+  position: relative;
+}
+.layer-switcher-btn {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  color: var(--text);
+  padding: 0;
+  cursor: pointer;
+  transform: translate(0, 0);
+  box-shadow: 2px 2px 0 var(--shadow-color);
+  transition: transform .12s, box-shadow .12s, color .12s, border-color .12s;
+}
+.layer-switcher-btn .msym { font-size: 20px; --msym-opsz: 20; }
+.layer-switcher-group:hover .layer-switcher-btn,
+.layer-switcher-group.open .layer-switcher-btn {
+  color: var(--accent);
+  border-color: var(--accent);
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0 var(--shadow-color);
+}
+.layer-switcher-btn:active {
+  transform: translate(0, 0);
+  box-shadow: 2px 2px 0 var(--shadow-color);
+}
+
+/* The flyout panel: hidden by default, revealed by hovering (or, via the
+   "open" class the button's click handler toggles, tapping on touch where
+   there's no hover state) anywhere within the group -- including the panel
+   itself, since it's a descendant of .layer-switcher-group, so moving the
+   pointer from button to panel never drops the hover state in between.
+   Sits flush against the button's left edge (no gap) for the same reason:
+   a gap with nothing under the pointer would count as leaving the group
+   mid-traverse and close the panel before it's reached. */
+.layer-switcher-panel {
+  display: none;
+  position: absolute;
+  top: -1px;
+  right: 36px;
+  min-width: 220px;
+  max-height: min(70vh, 480px);
+  overflow-y: auto;
+  padding: 8px 10px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  box-shadow: 2px 2px 0 var(--shadow-color);
+}
+.layer-switcher-group:hover .layer-switcher-panel,
+.layer-switcher-group.open .layer-switcher-panel {
+  display: block;
+}
+.layer-switcher-title {
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+.layer-switcher-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1.2;
+  color: var(--text);
+  white-space: nowrap;
+}
+.layer-switcher-row:hover {
+  background: var(--bg-alt);
+}
+.layer-switcher-row input {
+  margin: 0;
+  flex-shrink: 0;
+  accent-color: var(--accent);
+}
+.layer-switcher-row-icon {
+  display: flex;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+.layer-switcher-row-icon .msym { font-size: 20px; --msym-opsz: 20; }
+.layer-switcher-row-label { flex: 1; }
+.layer-switcher-row input:checked ~ .layer-switcher-row-icon,
+.layer-switcher-row input:checked ~ .layer-switcher-row-label {
+  color: var(--accent);
+  font-weight: 600;
+}
+
 /* While Leaflet's zoom animation is running, every zoom-animated pane is
    scaled with a CSS transform rather than actually redrawn at the new
    coordinates (leaflet.css's `.leaflet-zoom-anim .leaflet-zoom-animated`
@@ -69,28 +190,46 @@
 
 
 /* A POI marker always contains BOTH the resting dot and the full signpost pin
-   in the DOM at once; only one is ever shown, chosen with plain CSS classes
-   toggled on the (never-replaced) icon element -- "expanded" on hover,
-   "highlighted" when opened. This avoids swapping icons via Leaflet's
-   `setIcon()`, which replaces the DOM node and can desync hover listeners
-   from it, leaving a pin stuck open. `.poi-marker` is the class Leaflet
-   itself puts on that icon element (via the divIcon's `className`). */
+   in the DOM at once; only one is ever shown, chosen with a plain CSS class
+   toggled on the (never-replaced) icon element -- "highlighted" when opened.
+   This avoids swapping icons via Leaflet's `setIcon()`, which replaces the
+   DOM node and can desync hover listeners from it, leaving a pin stuck open.
+   `.poi-marker` is the class Leaflet itself puts on that icon element (via
+   the divIcon's `className`). */
 .poi-marker { position: relative; width: 42px; height: 48px; }
 
 .poi-marker-dot {
   position: absolute;
   left: 50%;
   bottom: 0;
-  transform: translateX(-50%);
-  width: 10px;
-  height: 10px;
+  /* iconAnchor (see poiMarkerIcon) sits at the box's bottom-center, i.e. the
+     POI's real coordinate -- the dot must be centered ON that point, not
+     just have its own bottom edge touch it, so shift down by half its own
+     height on top of the horizontal centering. */
+  transform: translate(-50%, 50%);
+  width: 24px;
+  height: 24px;
   border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: var(--poi-color, var(--sign-red));
-  border: 1.5px solid var(--sign-white);
-  box-shadow: 1px 1px 0 var(--shadow-color);
+  box-shadow: 2px 2px 0 var(--shadow-color);
 }
-.poi-marker.expanded .poi-marker-dot,
 .poi-marker.highlighted .poi-marker-dot { display: none; }
+/* The icon glyph is shown directly on the resting dot (zoomed-out view) so
+   what a POI is reads at a glance, without needing to hover it open into
+   the full signpost pin below. Solid-color fill + white glyph (a filled
+   badge) rather than day-start markers' pale-fill/colored-stroke ("hollow
+   ring") look -- fill vs. outline is a second differentiator on top of
+   shape (circle vs. triangle/square/ring), so the two marker families
+   stay visually distinct even at zoom levels too far out to read shape. */
+.poi-dot-glyph {
+  font-size: 11px;
+  line-height: 1;
+  color: var(--sign-white);
+}
+.poi-dot-glyph .msym { font-size: 16px; --msym-opsz: 20; }
 
 /* Styled after Alpine "segnavia" trail signposts: a white board with red trim,
    tapered to a point like a marker flag planted at the POI's location.
@@ -104,7 +243,6 @@
   inset: 0;
   filter: drop-shadow(2px 2px 0 var(--shadow-color));
 }
-.poi-marker.expanded .poi-divicon,
 .poi-marker.highlighted .poi-divicon { display: block; }
 .poi-divicon-outer {
   position: absolute;
@@ -120,18 +258,54 @@
 }
 .poi-glyph {
   position: absolute;
-  top: 6px;
+  top: 4px;
   left: 0;
   right: 0;
-  text-align: center;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   font-size: 13px;
   line-height: 1;
   color: var(--sign-ink);
 }
-.poi-glyph svg { width: 24px; height: 24px; vertical-align: -3px; fill: currentColor; }
+.poi-glyph .msym { font-size: 24px; --msym-opsz: 40; }
 .poi-marker.highlighted .poi-divicon-outer { background: var(--sign-ink); }
 .poi-marker.highlighted .poi-divicon-inner { background: var(--poi-color, var(--sign-red)); }
 .poi-marker.highlighted .poi-glyph { color: var(--sign-white); }
+
+/* Badge marking that a day-start marker's cluster slot also absorbed a POI
+   (see tripMarkerIcon's `poi` option and combinedClusterIcon in
+   clusters.js) -- same solid-fill look as the plain POI dot (.poi-marker-dot)
+   so it reads as "a POI is here too" using the same visual language, just
+   scaled down and centered over the shape instead of standing alone. Hidden
+   until hover (same reveal-on-hover treatment as the compass dial) so it
+   doesn't clutter the resting marker. Shown on whichever element is
+   actually Leaflet's hoverable icon box: `.trip-marker-hit` for the plain
+   start marker, `.cluster-marker` for the photo-cluster variant (see
+   combinedClusterIcon). */
+.trip-marker-poi-badge {
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--marker-color);
+  box-shadow: 1px 1px 0 var(--shadow-color);
+  color: var(--sign-white);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  pointer-events: none;
+  z-index: 3;
+}
+.trip-marker-poi-badge .msym { font-size: 12px; --msym-opsz: 20; }
+.trip-marker-hit:hover .trip-marker-poi-badge,
+.cluster-marker:hover .trip-marker-poi-badge {
+  opacity: 1;
+}
 
 /* Trip/day start & end markers, always visible for every trip (not a
    hover-reveal dot like ordinary POIs, since they're landmarks worth seeing
@@ -193,8 +367,8 @@
 .trip-marker-triangle-tip {
   position: absolute;
   top: 50%; left: 50%;
-  width: 5px; height: 5px;
-  margin: -2.5px 0 0 -2.5px;
+  width: 6px; height: 6px;
+  margin: -3px 0 0 -3px;
   border-radius: 50%;
   background: var(--marker-color);
 }
@@ -226,7 +400,7 @@
   display: flex; align-items: center; justify-content: center;
   font-family: var(--font-display);
   font-weight: 700;
-  font-size: 11px;
+  font-size: 14px;
   color: var(--marker-color);
   pointer-events: none;
   z-index: 2;
@@ -257,7 +431,7 @@
   top: 2px; left: 50%;
   transform: translateX(-50%);
   font-family: var(--font-display);
-  font-size: 7px;
+  font-size: 8px;
   font-weight: 700;
   color: var(--marker-color);
   z-index: 1;
@@ -385,15 +559,17 @@
    centered trip/day/activity rows above) since it's a list, not a label. */
 .tmt-poi-list { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--border); text-align: left; }
 .tmt-poi { display: flex; align-items: center; gap: 6px; padding: 1px 0; white-space: nowrap; }
-.tmt-poi-icon { flex-shrink: 0; width: 16px; text-align: center; }
-.tmt-poi-icon svg { width: 14px; height: 14px; vertical-align: -2px; fill: currentColor; }
+.tmt-poi-icon {
+  flex-shrink: 0;
+  width: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.tmt-poi-icon .msym { font-size: 12px; --msym-opsz: 20; }
 .tmt-poi-selected { font-weight: 600; }
 
 .day-icon { width: 40px; height: 40px; object-fit: contain; vertical-align: middle; }
-/* The tracks-view day list is a dense list of rows -- a 40px icon next to
-   one line of text is oversized there, so it's scaled down ~30% just in
-   that context. */
-.tl-title .day-icon { width: 28px; height: 28px; }
 
 /* Each track/day's own start/end: smaller plain circles in the track's
    color, so a day's endpoints are visible at a glance without the weight of

@@ -53,6 +53,26 @@ def to_roman(n):
 
 SIMPLIFY_TOLERANCE_M = 2.0  # Douglas-Peucker tolerance in meters
 
+GRADE_SMOOTHING_M = 30  # look-ahead window: raw point-to-point elevation deltas are
+# noisy (consumer GPS elevation can easily be off by 10-50m, so a single bad reading
+# over a couple of meters of travel reads as an absurd grade -- 100%+ spikes); a wider
+# window averages that error away over more distance instead. Matches geo.js's
+# (now-removed) client-side trackGradeSeries, computed here instead so every viewer
+# session doesn't redo the same O(n) two-pointer pass over every track's points.
+
+# Mirrors the "max" thresholds of GRADE_BUCKETS in js/colors.js (keep in sync).
+# Even after GRADE_SMOOTHING_M, per-point grade still flickers across these
+# bucket boundaries constantly, which renders as a wall of tiny colored
+# segments on the map (buildSegmentGroup in map-layers.js only merges
+# *consecutive* same-bucket points). MIN_GRADE_RUN_M below fixes that by
+# absorbing any bucket-run shorter than this into a neighboring run.
+GRADE_BUCKET_EDGES = [-16, -8, -4, -2, 2, 4, 8, 16]
+MIN_GRADE_RUN_M = 100
+
+ELE_PERCENTILE_FOR_COLOR_MAX = 0.995  # see finish_all_trips: a single brief high peak
+# would otherwise stretch the whole altimetry color ramp so every normal-elevation
+# trip gets squashed into its low end (see altitudeColor/terrainColor in js/colors.js).
+
 # --- Surface/highway lookup (local OSM extracts via Geofabrik + pyrosm) ----
 # surface/highway are no longer read from whatever Komoot happened to embed
 # in the GPX <extensions> (many exports don't have them at all); instead
@@ -623,6 +643,86 @@ def rdp(points, tolerance, keep_indices):
     return keep
 
 
+def grade_bucket_index(grade):
+    """Index into GRADE_BUCKET_EDGES + 1 (i.e. which of the 9 GRADE_BUCKETS
+    bucket in js/colors.js a grade% falls into)."""
+    for i, edge in enumerate(GRADE_BUCKET_EDGES):
+        if grade <= edge:
+            return i
+    return len(GRADE_BUCKET_EDGES)
+
+
+def grade_bucket_representative(idx):
+    """A grade% value that maps back to bucket `idx` via grade_bucket_index,
+    used to re-tag points absorbed into a neighboring bucket by
+    smooth_grade_buckets (their real measured grade no longer applies once
+    they're relabelled, so this stands in for it)."""
+    n = len(GRADE_BUCKET_EDGES)
+    if idx == 0:
+        return GRADE_BUCKET_EDGES[0] - 4
+    if idx == n:
+        return GRADE_BUCKET_EDGES[-1] + 4
+    return (GRADE_BUCKET_EDGES[idx - 1] + GRADE_BUCKET_EDGES[idx]) / 2
+
+
+def smooth_grade_buckets(points, min_run_m):
+    """Points' per-point grade flickers across GRADE_BUCKET_EDGES thresholds
+    constantly (GPS elevation noise), which renders as a wall of tiny colored
+    segments on the map/chart. Absorb any run of consecutive same-bucket
+    points shorter than min_run_m into whichever neighboring run is closer in
+    value, iteratively, and overwrite those points' grade with a
+    representative value of their new bucket so every downstream consumer
+    (map coloring, chart coloring, legend %s, min/max stats) sees one
+    consistent picture.
+
+    The two extreme buckets (<= -16% / > 16%) are never merged away even if
+    short: those are the steepest, most noteworthy pitches on a track, and
+    are exactly what you don't want smoothed out of existence. They can
+    still absorb a short neighboring run into themselves, though."""
+    n = len(points)
+    if n < 2:
+        return
+    buckets = [grade_bucket_index(p["grade"]) for p in points]
+    extreme = {0, len(GRADE_BUCKET_EDGES)}
+
+    changed = True
+    while changed:
+        changed = False
+        runs = []  # [start, end_inclusive, bucket]
+        i = 0
+        while i < n:
+            j = i
+            while j + 1 < n and buckets[j + 1] == buckets[i]:
+                j += 1
+            runs.append([i, j, buckets[i]])
+            i = j + 1
+        if len(runs) <= 1:
+            break
+        for ri, (s, e, b) in enumerate(runs):
+            if b in extreme:
+                continue
+            if points[e]["dist"] - points[s]["dist"] >= min_run_m:
+                continue
+            left_b = runs[ri - 1][2] if ri > 0 else None
+            right_b = runs[ri + 1][2] if ri < len(runs) - 1 else None
+            if left_b is None and right_b is None:
+                continue
+            if left_b is None:
+                target = right_b
+            elif right_b is None:
+                target = left_b
+            else:
+                target = left_b if abs(left_b - b) <= abs(right_b - b) else right_b
+            for k in range(s, e + 1):
+                buckets[k] = target
+            changed = True
+            break  # runs are stale after a merge -- rescan from scratch
+
+    for p, b in zip(points, buckets):
+        if b != grade_bucket_index(p["grade"]):
+            p["grade"] = grade_bucket_representative(b)
+
+
 def parse_time(t):
     if not t:
         return None
@@ -707,7 +807,7 @@ def parse_track_raw(trk, trip_default_activity=None):
     if not raw_points:
         return None
 
-    return {"name": label, "emoji": emoji, "activity": activity, "color": color, "desc": desc, "raw_points": raw_points}
+    return {"name": label, "activity": activity, "color": color, "desc": desc, "raw_points": raw_points}
 
 
 def finish_track(track_raw, ways, index, trip_idx, presence_index):
@@ -756,6 +856,21 @@ def finish_track(track_raw, ways, index, trip_idx, presence_index):
     for idx, p in zip(kept_indices, points):
         p["dist"] = round(cum_dist[idx], 1)
 
+    # Smoothed grade (%) at each kept point, over the same simplified point
+    # set the client renders/colors by (see GRADE_SMOOTHING_M above).
+    n_pts = len(points)
+    j = 0
+    for i in range(n_pts):
+        if j < i:
+            j = i
+        while j < n_pts - 1 and points[j]["dist"] - points[i]["dist"] < GRADE_SMOOTHING_M:
+            j += 1
+        dist_m = points[j]["dist"] - points[i]["dist"]
+        e0, e1 = points[i]["ele"], points[j]["ele"]
+        points[i]["grade"] = round((e1 - e0) / dist_m * 100, 1) if (e0 is not None and e1 is not None and dist_m >= 1) else 0
+
+    smooth_grade_buckets(points, MIN_GRADE_RUN_M)
+
     times = [parse_time(p["t"]) for p in raw_points if p["t"]]
     start_t = min(times).isoformat() if times else None
     end_t = max(times).isoformat() if times else None
@@ -766,7 +881,6 @@ def finish_track(track_raw, ways, index, trip_idx, presence_index):
     return {
         "id": track_raw.get("id"),
         "name": track_raw["name"],
-        "emoji": track_raw["emoji"],
         "activity": track_raw["activity"],
         "color": track_raw["color"],
         "desc": track_raw["desc"],
@@ -885,6 +999,19 @@ def finish_trip(trip_raw, ways, index, trip_idx, presence_index):
     }
 
 
+def global_ele_stats(trips):
+    """Elevation min/max/p995 across every (simplified) point of every track of
+    every trip -- the altimetry color scale's fixed range for the whole viewer
+    session (see globalEleMinMax's former home in js/geo.js, and its use in
+    js/app.js main()). Computed once here instead of by every viewer on load."""
+    samples = [p["ele"] for trip in trips for t in trip["tracks"] for p in t["points"] if p["ele"] is not None]
+    if not samples:
+        return {"min": 0, "max": 0, "p995": 0}
+    samples.sort()
+    p995 = samples[min(len(samples) - 1, math.floor(len(samples) * ELE_PERCENTILE_FOR_COLOR_MAX))]
+    return {"min": samples[0], "max": samples[-1], "p995": p995}
+
+
 def main():
     script_dir = Path(__file__).resolve().parent
     project_dir = script_dir.parent
@@ -925,11 +1052,13 @@ def main():
     ])
     trips = [finish_trip(trip_raw, ways, index, i, presence_index) for i, trip_raw in enumerate(trips_raw)]
 
+    ele_stats = global_ele_stats(trips)
+
     out_path = project_dir / "data" / ".generated" / "trips.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = out_path.with_suffix(".json.tmp")
     with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump({"trips": trips}, f, ensure_ascii=False, separators=(",", ":"))
+        json.dump({"trips": trips, "ele_stats": ele_stats}, f, ensure_ascii=False, separators=(",", ":"))
     tmp_path.replace(out_path)  # atomic: out_path is never left truncated/partial
 
     print(f"\nWrote {out_path}")
