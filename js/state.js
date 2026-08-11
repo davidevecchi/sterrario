@@ -20,10 +20,12 @@ export const state = {
   poiMarkers: {},        // tripId -> [markers] parallel to trip.pois -- sparse: a POI
                           // absorbed into a start-anchored cluster (see buildTripClusters)
                           // has no standalone marker, so this index is left undefined.
-  clusterGroupsByTrip: {}, // tripId -> L.layerGroup of every start/POI/photo cluster marker
-                            // for that trip (plus its standalone trip-end ring), replacing
-                            // the old poiLayerGroups/tripBoundaryGroups/activityMarkerGroups/
-                            // photoGroupsByTrip -- see buildTripClusterLayer.
+  clusterGroupsByTrip: {}, // tripId -> plain array of maplibregl.Marker, one per start/POI/
+                            // photo cluster for that trip (plus its standalone trip-end
+                            // ring) -- each marker's own `_onMap` flag tracks whether
+                            // updateClusterVisibility currently has it added to the map.
+                            // Replaces the old poiLayerGroups/tripBoundaryGroups/
+                            // activityMarkerGroups/photoGroupsByTrip -- see buildTripClusterLayer.
   clustersByTrip: {},    // tripId -> cluster descriptor array (see buildTripClusters),
                           // each enriched with its own `marker` by buildTripClusterLayer --
                           // used by updateClusterVisibility to toggle markers individually.
@@ -33,9 +35,11 @@ export const state = {
   leftoverPhotosByTrip: {},    // tripId -> photo entries the 30m start/POI pass didn't claim
                                 // (see buildTripClusters) -- re-clustered by on-screen pixel
                                 // distance on every zoom/pan, see buildPhotoPixelClusters.
-  photoClusterGroupsByTrip: {}, // tripId -> L.layerGroup of that trip's leftover-photo pixel
-                                 // clusters, rebuilt from scratch on zoom/pan and whenever the
-                                 // trip becomes active -- see rebuildPhotoClusterLayer.
+  photoClusterGroupsByTrip: {}, // tripId -> plain array of maplibregl.Marker for that trip's
+                                 // leftover-photo pixel clusters (with an `_onMap` flag stamped
+                                 // on the array itself, shown/hidden as one unit), rebuilt from
+                                 // scratch on zoom/pan and whenever the trip becomes active --
+                                 // see rebuildPhotoClusterLayer.
   hoveredTrackId: null,  // track the persistent selection halo/stroke is narrowed to while hovering it (see showTrackHoverHighlight)
   hoveredTripId: null,   // trip whose every track gets the halo/weight-5 preview while hovering one of its tracks on a different (or no) active trip (see showTripHoverHighlight)
   hoveredHitTrackId: null, // trackId currently under the cursor on the shared tracks-hit layer --
@@ -48,8 +52,10 @@ export const state = {
   navTripId: null,       // milestone-nav context: which trip/list/position is shown
   navMilestones: [],
   navIndex: -1,
-  navBoundaryMarker: null,
-  poiSignTooltip: null,  // fixed (non-hover) L.tooltip pinned over the selected POI, see showMilestone
+  navBoundaryMarker: null, // transient maplibregl.Marker for a boundary/absorbed-POI milestone, see makeBoundaryMarker in poi.js
+  poiSignTooltipEl: null,  // pinned (non-hover) tooltip div over the selected POI, see showPinnedTooltip in map-layers.js / showMilestone in poi.js
+  poiSignTooltipAnchor: null, // {lat,lng} the pinned tooltip is anchored to, re-projected on every map move
+  poiSignTooltipOpts: null,   // {offset, className} from the last showPinnedTooltip() call, reused by the "move" reprojection
   chart: null,
   chartPoints: [],       // unified array backing whatever is currently charted
   hoverTooltipEl: null,   // single shared absolutely-positioned DOM div reused for every

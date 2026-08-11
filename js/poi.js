@@ -7,7 +7,7 @@ import {
   findNextSign, trackSidebarDayNumber,
 } from "./geo.js";
 import { fmtSignDistKm } from "./format.js";
-import { tripMarkerTooltipHtml } from "./map-layers.js";
+import { tripMarkerTooltipHtml, showPinnedTooltip, hidePinnedTooltip } from "./map-layers.js";
 
 export function openBoundaryMilestone(tripId, end) {
   const milestones = computeTripMilestones(state.tripById[tripId]);
@@ -59,7 +59,7 @@ export function showMilestone(tripId, milestones, idx, pan) {
     const prevEl = prevMarker && prevMarker.getElement();
     if (prevEl) prevEl.classList.remove("highlighted");
   }
-  if (state.navBoundaryMarker) { state.map.removeLayer(state.navBoundaryMarker); state.navBoundaryMarker = null; }
+  if (state.navBoundaryMarker) { state.navBoundaryMarker.remove(); state.navBoundaryMarker = null; }
   state.selectedPoiIndex = -1;
   state.activePoiTripId = null;
   removePoiSignTooltip();
@@ -76,18 +76,17 @@ export function showMilestone(tripId, milestones, idx, pan) {
     const marker = state.poiMarkers[tripId][m.poiIndex];
     // state.poiMarkers is sparse -- a POI absorbed into a start-anchored
     // cluster (see buildTripClusters) has no standalone marker of its own
-    // to highlight, so fall back to the same transient L.circleMarker
-    // used for trip start/end boundary milestones just below.
+    // to highlight, so fall back to the same transient marker (see
+    // makeBoundaryMarker) used for trip start/end boundary milestones just
+    // below.
     let anchorLatLng;
     if (marker) {
       const markerEl = marker.getElement();
       if (markerEl) markerEl.classList.add("highlighted");
-      anchorLatLng = marker.getLatLng();
+      anchorLatLng = marker.getLngLat();
     } else {
-      state.navBoundaryMarker = L.circleMarker([poi.lat, poi.lon], {
-        radius: 7, color: "#f7f2e4", weight: 2, fillColor: "#ab2328", fillOpacity: 1,
-      }).addTo(state.map);
-      anchorLatLng = L.latLng(poi.lat, poi.lon);
+      state.navBoundaryMarker = makeBoundaryMarker(poi.lat, poi.lon);
+      anchorLatLng = { lat: poi.lat, lng: poi.lon };
     }
     lat = poi.lat; lon = poi.lon;
     titleHtml = `${poiIconHtml(poi)} ${poi.name || "(senza nome)"}`;
@@ -96,7 +95,7 @@ export function showMilestone(tripId, milestones, idx, pan) {
       ${note ? `<button class="poi-note-btn" id="poiNoteBtn">${icoHtml("sticky_note_2")} Leggi la nota</button>` : ""}
       ${poi.ele != null ? `<div class="poi-ele">Altitudine: ${Math.round(poi.ele)} m</div>` : ""}
     `;
-    if (pan) state.map.panTo([lat, lon]);
+    if (pan) state.map.panTo([lon, lat]);
     document.getElementById("poiDetailBody").innerHTML = `<div class="poi-title">${titleHtml}</div>${extraHtml}`;
     if (note) {
       document.getElementById("poiNoteBtn").addEventListener("click", () => openNoteModal(titleHtml, note));
@@ -109,10 +108,8 @@ export function showMilestone(tripId, milestones, idx, pan) {
       <div class="poi-cmt">${trip.name}</div>
       ${m.ele != null ? `<div class="poi-ele">Altitudine: ${Math.round(m.ele)} m</div>` : ""}
     `;
-    state.navBoundaryMarker = L.circleMarker([lat, lon], {
-      radius: 7, color: "#f7f2e4", weight: 2, fillColor: "#ab2328", fillOpacity: 1,
-    }).addTo(state.map);
-    if (pan) state.map.panTo([lat, lon]);
+    state.navBoundaryMarker = makeBoundaryMarker(lat, lon);
+    if (pan) state.map.panTo([lon, lat]);
     document.getElementById("poiDetailBody").innerHTML = `<div class="poi-title">${titleHtml}</div>${extraHtml}`;
   }
 
@@ -121,25 +118,33 @@ export function showMilestone(tripId, milestones, idx, pan) {
   if (state.chart) state.chart.update();
 }
 
+// Transient marker for a trip start/end or POI absorbed into a cluster
+// (see showMilestone) -- was an SVG `L.circleMarker`; MapLibre has no
+// vector-circle marker primitive, so this is a small round CSS div instead,
+// anchored at its own center (radius 7 => 14px, weight 2 => 2px border,
+// same color/fillColor/fillOpacity as before).
+function makeBoundaryMarker(lat, lon) {
+  const element = document.createElement("div");
+  element.style.cssText = "width:14px;height:14px;border-radius:50%;border:2px solid #f7f2e4;background:#ab2328;";
+  return new maplibregl.Marker({ element, anchor: "center" }).setLngLat([lon, lat]).addTo(state.map);
+}
+
 // The day-sign tooltip (see tripMarkerTooltipHtml), pinned open over the
 // selected POI for as long as its bottom card is -- unlike the plain
 // hover version, this one is never opened/closed by mouseover/mouseout,
 // only by showMilestone/closePoi, and it stays fixed at the POI's own
-// latlng rather than tracking the cursor (`sticky` left unset, same as
-// the trip start/end markers' own tooltip).
+// latlng rather than tracking the cursor (matching the trip start/end
+// markers' own tooltip, which is likewise never sticky).
 function showPoiSignTooltip(trip, poi, latlng) {
   const track = nearestTrackForPoi(trip, poi).track;
   const html = tripMarkerTooltipHtml(
     trip, trackSidebarDayNumber(track), track.start_t, track.activity, poisForTrack(trip, track)
   );
-  state.poiSignTooltip = L.tooltip({
-    direction: "top", offset: [0, -18], className: "trip-marker-tooltip-wrap", permanent: true, interactive: false,
-  }).setLatLng(latlng).setContent(html);
-  state.poiSignTooltip.addTo(state.map);
+  showPinnedTooltip(latlng, html, { offset: [0, -18], className: "trip-marker-tooltip-wrap" });
 }
 
 function removePoiSignTooltip() {
-  if (state.poiSignTooltip) { state.map.removeLayer(state.poiSignTooltip); state.poiSignTooltip = null; }
+  hidePinnedTooltip();
 }
 
 export function openNoteModal(titleHtml, note) {
@@ -187,7 +192,7 @@ export function closePoi() {
     const prevEl = prevMarker && prevMarker.getElement();
     if (prevEl) prevEl.classList.remove("highlighted");
   }
-  if (state.navBoundaryMarker) { state.map.removeLayer(state.navBoundaryMarker); state.navBoundaryMarker = null; }
+  if (state.navBoundaryMarker) { state.navBoundaryMarker.remove(); state.navBoundaryMarker = null; }
   removePoiSignTooltip();
   state.selectedPoiIndex = -1;
   state.activePoiTripId = null;

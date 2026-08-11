@@ -817,6 +817,9 @@ function buildTrackLayers(map) {
     if (state.hoverTooltipEl && state.hoverTooltipAnchor && !state.hoverTooltipFading) {
       positionHoverTooltip(state.hoverTooltipAnchor, state.hoverTooltipOpts || {});
     }
+    if (state.poiSignTooltipEl && state.poiSignTooltipAnchor) {
+      positionTooltipEl(state.poiSignTooltipEl, state.poiSignTooltipAnchor, state.poiSignTooltipOpts || {});
+    }
   });
 }
 
@@ -1134,6 +1137,9 @@ export const MARKER_TIER_PHOTO = 0;
 export const MARKER_TIER_POI = 1;
 export const MARKER_TIER_START = 2;
 
+// Pure rank math -- callers apply the result themselves via
+// `marker.getElement().style.zIndex = String(offset)` (there's no
+// `zIndexOffset` marker option on `maplibregl.Marker`, unlike Leaflet's).
 export function markerZIndexOffset(trip, rank, tier) {
   return trip._buildIndex * MARKER_TRIP_RANK_UNIT + tier * MARKER_TIER_RANK_UNIT + rank * MARKER_ITEM_RANK_UNIT;
 }
@@ -1208,15 +1214,30 @@ export function categoryPercents(tracks, keyFn) {
   return percents;
 }
 
-// One icon per POI, created once and never swapped: `setIcon()` replaces
-// the marker's DOM node, which can desync Leaflet's hover listeners from
-// the new element and leave a pin stuck open. Instead both the resting dot
-// and the full signpost pin are always in the DOM, and a "highlighted" CSS
-// class on the (stable) icon element -- set when opened -- decides which
-// one is visible.
+// Builds the plain DOM element a MapLibre `maplibregl.Marker` needs,
+// replacing Leaflet's `L.divIcon` -- `iconAnchor` (the point of the icon
+// that lands on the marker's own lngLat, same convention Leaflet used) is
+// applied as a Marker `offset` paired with `anchor:"top-left"` by every
+// call site below and in clusters.js; `iconSize` is set as an explicit
+// inline width/height since MapLibre, unlike `L.divIcon`, doesn't size the
+// element for you.
+export function buildMarkerIcon({ className, html, iconSize, iconAnchor }) {
+  const element = document.createElement("div");
+  element.className = className;
+  element.innerHTML = html;
+  element.style.width = `${iconSize[0]}px`;
+  element.style.height = `${iconSize[1]}px`;
+  return { element, offset: [-iconAnchor[0], -iconAnchor[1]] };
+}
+
+// One icon per POI, created once and never swapped: rebuilding a marker's
+// element on every change can desync hover listeners from the new node and
+// leave a pin stuck open. Instead both the resting dot and the full
+// signpost pin are always in the DOM, and a "highlighted" CSS class on the
+// (stable) icon element -- set when opened -- decides which one is visible.
 export function poiMarkerIcon(poi, color) {
   const glyph = poiIconHtml(poi);
-  return L.divIcon({
+  return buildMarkerIcon({
     className: "poi-marker",
     html: `
       <div style="--poi-color: ${color}">
@@ -1230,7 +1251,6 @@ export function poiMarkerIcon(poi, color) {
     `,
     iconSize: [42, 48],
     iconAnchor: [21, 48],
-    popupAnchor: [0, -48],
   });
 }
 
@@ -1317,9 +1337,9 @@ export function tripMarkerIcon(shape, color, { dayNumber, bearing, roundTrip, po
   // filled style as the plain POI dot, so the POI doesn't just vanish once
   // it's sharing a slot with a day-start shape.
   const poiBadge = poi ? `<div class="trip-marker-poi-badge">${poiIconHtml(poi)}</div>` : "";
-  return L.divIcon({
-    // Leaflet's own hover/click listeners live on this outer icon element
-    // (fixed at iconSize, never transformed) rather than on the inner
+  return buildMarkerIcon({
+    // Hover/click listeners live on this outer icon element (fixed at
+    // iconSize, never transformed) rather than on the inner
     // `.trip-marker-triangle`/`.trip-marker-square`/`.trip-marker-ring`
     // div it wraps -- see the CSS ":hover" rules keyed off
     // "trip-marker-hit" for why that separation matters.
@@ -1327,7 +1347,6 @@ export function tripMarkerIcon(shape, color, { dayNumber, bearing, roundTrip, po
     html: `<div class="trip-marker ${shapeClass}" style="--marker-color:${color}">${inner}${poiBadge}</div>`,
     iconSize: [size, size],
     iconAnchor: [half, half],
-    popupAnchor: [0, -half],
   });
 }
 
@@ -1536,17 +1555,23 @@ function ensureHoverTooltipEl() {
   }
   return state.hoverTooltipEl;
 }
-function positionHoverTooltip(latlng, opts) {
+// Shared by the transient hover tooltip above and the pinned POI-signpost
+// tooltip below (see showPinnedTooltip) -- both are plain absolutely
+// positioned divs anchored to a map lngLat via the same math, just with
+// different show/hide lifecycles, so this is the one place that math lives.
+function positionTooltipEl(el, latlng, opts) {
   if (!state.map) return;
   const p = state.map.project([latlng.lng, latlng.lat]);
   const offset = (opts && opts.offset) || [0, 0];
-  const el = state.hoverTooltipEl;
   el.style.left = `${p.x}px`;
   el.style.top = `${p.y}px`;
   // Approximates Leaflet's direction:"top" (every call site in this app
   // uses "top") -- anchors the box's bottom-center at the point, nudged by
   // the caller's own offset.
   el.style.transform = `translate(calc(-50% + ${offset[0]}px), calc(-100% + ${offset[1]}px))`;
+}
+function positionHoverTooltip(latlng, opts) {
+  if (state.hoverTooltipEl) positionTooltipEl(state.hoverTooltipEl, latlng, opts);
 }
 export function showHoverTooltip(latlng, html, opts) {
   // Cancel any pending close/fade from a moment ago -- e.g. crossing straight
@@ -1584,6 +1609,38 @@ export function hideHoverTooltip() {
       state.hoverTooltipEl.style.display = "none";
     }, HOVER_TOOLTIP_FADE_MS);
   }, HOVER_TOOLTIP_CLOSE_DELAY_MS);
+}
+
+// The pinned POI-signpost tooltip (see showPoiSignTooltip in poi.js) --
+// same absolutely-positioned-div mechanism as the transient hover tooltip
+// above, but its own separate element/state so both can be shown at once
+// (e.g. a signpost pinned open while hovering an unrelated track
+// elsewhere) and with no fade/auto-hide lifecycle: it only ever closes via
+// an explicit hidePinnedTooltip() call (showMilestone/closePoi), matching
+// the old Leaflet tooltip's `permanent: true`.
+function ensurePinnedTooltipEl() {
+  if (!state.poiSignTooltipEl) {
+    const el = document.createElement("div");
+    el.className = "map-hover-tooltip";
+    document.getElementById("mapWrap").appendChild(el);
+    state.poiSignTooltipEl = el;
+  }
+  return state.poiSignTooltipEl;
+}
+export function showPinnedTooltip(latlng, html, opts) {
+  state.poiSignTooltipAnchor = latlng;
+  state.poiSignTooltipOpts = opts;
+  const el = ensurePinnedTooltipEl();
+  el.className = `map-hover-tooltip ${opts.className || ""}`;
+  el.innerHTML = html;
+  el.style.display = "block";
+  el.style.opacity = "1";
+  positionTooltipEl(el, latlng, opts);
+}
+export function hidePinnedTooltip() {
+  if (!state.poiSignTooltipEl) return;
+  state.poiSignTooltipEl.style.display = "none";
+  state.poiSignTooltipAnchor = null;
 }
 
 export function showHoverMarker(lat, lon) {

@@ -34,7 +34,7 @@ import { haversineM, trackStartBearing, isRoundTripTrack, trackSidebarDayNumber 
 import { ACTIVITY_ICON } from "./colors.js";
 import {
   dayRank, poiRank, markerZIndexOffset, MARKER_TIER_START, MARKER_TIER_POI, MARKER_TIER_PHOTO,
-  tripMarkerIcon, poiMarkerIcon, tripMarkerTooltipHtml,
+  tripMarkerIcon, poiMarkerIcon, tripMarkerTooltipHtml, buildMarkerIcon,
   trackTooltipOpts, beginTrackHover, endTrackHover,
 } from "./map-layers.js";
 import { poiIconHtml } from "./poi-icons.js";
@@ -224,7 +224,7 @@ function combinedClusterIcon(cluster, trip) {
     }
   }
   const badgeHtml = cluster.photoCount > 1 ? `<div class="cluster-count-badge">${cluster.photoCount}</div>` : "";
-  return L.divIcon({
+  return buildMarkerIcon({
     className: "cluster-marker",
     html: `
       <div style="--marker-color:${trip._color}">
@@ -235,7 +235,6 @@ function combinedClusterIcon(cluster, trip) {
     `,
     iconSize: [44, 44],
     iconAnchor: [22, 22],
-    popupAnchor: [0, -22],
   });
 }
 
@@ -262,18 +261,29 @@ function clusterIcon(cluster, trip, zoom) {
 // every built trip (not just the active one -- a trip can become active
 // later at whatever zoom the map is at by then). Only hasPhoto clusters
 // can ever change appearance with zoom, so this skips everything else.
+// `maplibregl.Marker` has no `setIcon()` -- rebuilding a fresh icon and
+// destroying/recreating the Marker would also lose its attached hover/click
+// listeners, so instead the existing marker's own element is mutated in
+// place (className/content/size) and just its offset re-set, leaving the
+// Marker instance (and everything bound to it) untouched.
 function refreshClusterIcons(zoom) {
   Object.entries(state.clustersByTrip).forEach(([tripId, clusters]) => {
     const trip = state.tripById[tripId];
     if (!trip) return;
     clusters.forEach(cluster => {
       if (!cluster.hasPhoto || !cluster.marker) return;
-      cluster.marker.setIcon(clusterIcon(cluster, trip, zoom));
+      const { element: newEl, offset } = clusterIcon(cluster, trip, zoom);
+      const el = cluster.marker.getElement();
+      el.className = newEl.className;
+      el.innerHTML = newEl.innerHTML;
+      el.style.width = newEl.style.width;
+      el.style.height = newEl.style.height;
+      cluster.marker.setOffset(offset);
     });
   });
 }
 
-// Builds one L.marker per cluster from buildTripClusters, plus the trip's
+// Builds one Marker per cluster from buildTripClusters, plus the trip's
 // always-standalone end ("ring") marker, and populates
 // state.clusterGroupsByTrip/state.clustersByTrip/state.poiMarkers (sparse
 // -- see the poiMarkers field comment). Click/hover behavior per cluster
@@ -289,6 +299,21 @@ function refreshClusterIcons(zoom) {
 //    the boundary milestone (day-1 triangle) or selects the day (square).
 //  - hasPoi (no start, no photo): identical to the old addPoiMarkers --
 //    click opens that POI.
+// Builds one `maplibregl.Marker` from an {element, offset} icon (see
+// buildMarkerIcon) -- anchor:"top-left" is always correct here since every
+// icon's `offset` already encodes the old Leaflet iconAnchor as a
+// top-left-relative shift (see buildMarkerIcon's own comment). zIndexOffset
+// has no Marker-option equivalent, so it's applied directly to the
+// element's own CSS z-index. Never added to the map here -- same lazy
+// timing as the old L.marker()-without-addTo()/L.layerGroup() construction,
+// left to updateClusterVisibility to add/remove as needed.
+function makeMarker(lat, lon, icon, zIndexOffset) {
+  const marker = new maplibregl.Marker({ element: icon.element, anchor: "top-left", offset: icon.offset })
+    .setLngLat([lon, lat]);
+  marker.getElement().style.zIndex = String(zIndexOffset);
+  return marker;
+}
+
 export function buildTripClusterLayer(trip, photos) {
   const { clusters, leftoverPhotos } = buildTripClusters(trip, photos);
   const markers = [];
@@ -296,21 +321,22 @@ export function buildTripClusterLayer(trip, photos) {
   const zoom = state.map.getZoom();
 
   clusters.forEach(cluster => {
-    const marker = L.marker([cluster.lat, cluster.lon], {
-      icon: clusterIcon(cluster, trip, zoom),
-      zIndexOffset: markerZIndexOffset(trip, cluster.rank, cluster.hasStart ? MARKER_TIER_START : MARKER_TIER_POI),
-    });
+    const marker = makeMarker(
+      cluster.lat, cluster.lon, clusterIcon(cluster, trip, zoom),
+      markerZIndexOffset(trip, cluster.rank, cluster.hasStart ? MARKER_TIER_START : MARKER_TIER_POI)
+    );
+    const el = marker.getElement();
 
     if (cluster.hasStart) {
       const start = cluster.start;
       const track = start.track;
-      marker.on("mouseover", () => beginTrackHover(
-        marker.getLatLng(),
+      el.addEventListener("mouseenter", () => beginTrackHover(
+        marker.getLngLat(),
         tripMarkerTooltipHtml(trip, trackSidebarDayNumber(track), track.start_t, track.activity),
         trackTooltipOpts(-10),
         { trackId: track.id }
       ));
-      marker.on("mouseout", () => endTrackHover());
+      el.addEventListener("mouseleave", () => endTrackHover());
     } else if (cluster.hasPoi) {
       const poiIndex = cluster.poiIndex;
       poiMarkersForTrip[poiIndex] = marker;
@@ -321,7 +347,7 @@ export function buildTripClusterLayer(trip, photos) {
     // or beyond) -- below that zoom the marker looks and behaves like a
     // plain start/POI, so clicking it opens the day/POI card instead, same
     // as before photo clustering existed.
-    marker.on("click", () => {
+    el.addEventListener("click", () => {
       if (cluster.hasPhoto && isPhotoZoom(state.map.getZoom())) {
         openPhoto(trip.id, cluster.photos[0].sourceIndex);
       } else if (cluster.hasStart) {
@@ -344,24 +370,25 @@ export function buildTripClusterLayer(trip, photos) {
   // updateClusterVisibility can treat every marker uniformly.
   const lastTrack = trip.tracks[trip.tracks.length - 1];
   const last = lastTrack.points[lastTrack.points.length - 1];
-  const endMarker = L.marker([last.lat, last.lon], {
-    icon: tripMarkerIcon("ring", trip._color),
-    zIndexOffset: markerZIndexOffset(trip, dayRank(trip, trip.tracks.length - 1), MARKER_TIER_START),
-  });
-  endMarker.on("mouseover", () => beginTrackHover(
-    endMarker.getLatLng(),
+  const endMarker = makeMarker(
+    last.lat, last.lon, tripMarkerIcon("ring", trip._color),
+    markerZIndexOffset(trip, dayRank(trip, trip.tracks.length - 1), MARKER_TIER_START)
+  );
+  const endEl = endMarker.getElement();
+  endEl.addEventListener("mouseenter", () => beginTrackHover(
+    endMarker.getLngLat(),
     tripMarkerTooltipHtml(trip, trackSidebarDayNumber(lastTrack), lastTrack.end_t, lastTrack.activity),
     trackTooltipOpts(-10),
     { trackId: lastTrack.id }
   ));
-  endMarker.on("mouseout", () => endTrackHover());
-  endMarker.on("click", () => openBoundaryMilestone(trip.id, "end"));
+  endEl.addEventListener("mouseleave", () => endTrackHover());
+  endEl.addEventListener("click", () => openBoundaryMilestone(trip.id, "end"));
   markers.push(endMarker);
   clusters.push({ hasStart: true, hasPoi: false, hasPhoto: false, marker: endMarker });
 
   state.poiMarkers[trip.id] = poiMarkersForTrip;
   state.clustersByTrip[trip.id] = clusters;
-  state.clusterGroupsByTrip[trip.id] = L.layerGroup(markers);
+  state.clusterGroupsByTrip[trip.id] = markers;
 
   state.leftoverPhotosByTrip[trip.id] = leftoverPhotos;
   rebuildPhotoClusterLayer(trip.id);
@@ -372,13 +399,12 @@ export function buildTripClusterLayer(trip, photos) {
 // 30m self-clustering -- see the module comment at the top of this file)
 
 // Anchor-based greedy clustering, same shape as the old 30m pass-3, but
-// measured in on-screen pixels (map.latLngToLayerPoint, current zoom) so
-// it reflects visual density instead of real-world distance -- rebuilt
-// from scratch on every zoom change (see hookPhotoClusterZoomRefresh)
-// rather than cached, since the same photos cluster differently at every
-// zoom.
+// measured in on-screen pixels (map.project, current zoom) so it reflects
+// visual density instead of real-world distance -- rebuilt from scratch on
+// every zoom change (see hookPhotoClusterZoomRefresh) rather than cached,
+// since the same photos cluster differently at every zoom.
 function buildPhotoPixelClusters(map, leftoverPhotos, totalPhotoCount) {
-  const pts = leftoverPhotos.map(pe => map.latLngToLayerPoint([pe.photo.lat, pe.photo.lon]));
+  const pts = leftoverPhotos.map(pe => map.project([pe.photo.lon, pe.photo.lat]));
   const claimed = new Set();
   const pixelClusters = [];
   // Bucket every point into a PHOTO_CLUSTER_RADIUS_PX-sized grid cell first,
@@ -404,7 +430,9 @@ function buildPhotoPixelClusters(map, leftoverPhotos, totalPhotoCount) {
         if (!neighbors) continue;
         neighbors.forEach(j => {
           if (claimed.has(j)) return;
-          if (pts[i].distanceTo(pts[j]) <= PHOTO_CLUSTER_RADIUS_PX) {
+          // Not .distanceTo() -- map.project()'s returned Point isn't a
+          // guaranteed-stable public API beyond its own .x/.y.
+          if (Math.hypot(pts[i].x - pts[j].x, pts[i].y - pts[j].y) <= PHOTO_CLUSTER_RADIUS_PX) {
             claimed.add(j);
             photoList.push(leftoverPhotos[j]);
           }
@@ -438,7 +466,7 @@ function buildPhotoPixelClusters(map, leftoverPhotos, totalPhotoCount) {
 // "nearest wins, rest badged" idea as combinedClusterIcon's count badge.
 function photoFlagIcon(cluster, trip) {
   const badgeHtml = cluster.photoCount > 1 ? `<div class="cluster-count-badge">${cluster.photoCount}</div>` : "";
-  return L.divIcon({
+  return buildMarkerIcon({
     className: "photo-flag-marker",
     html: `
       <div class="photo-flag" style="--marker-color:${trip._color}">
@@ -448,7 +476,6 @@ function photoFlagIcon(cluster, trip) {
     `,
     iconSize: [32, 32],
     iconAnchor: [16, 16],
-    popupAnchor: [0, -16],
   });
 }
 
@@ -460,25 +487,35 @@ function photoFlagIcon(cluster, trip) {
 function rebuildPhotoClusterLayer(tripId) {
   const trip = state.tripById[tripId];
   const leftoverPhotos = state.leftoverPhotosByTrip[tripId] || [];
-  const oldGroup = state.photoClusterGroupsByTrip[tripId];
-  if (oldGroup && state.map.hasLayer(oldGroup)) state.map.removeLayer(oldGroup);
+  const oldMarkers = state.photoClusterGroupsByTrip[tripId];
+  // Marker.remove() is a safe no-op if the marker was never added to the
+  // map, so no need to check visibility first the way L.layerGroup's
+  // map.hasLayer() guard used to.
+  if (oldMarkers) oldMarkers.forEach(m => m.remove());
 
   const totalPhotoCount = (state.photosByTrip[tripId] || []).length;
   const zoom = state.map.getZoom();
   const pixelClusters = isPhotoZoom(zoom) ? buildPhotoPixelClusters(state.map, leftoverPhotos, totalPhotoCount) : [];
   const markers = pixelClusters.map(cluster => {
-    const marker = L.marker([cluster.lat, cluster.lon], {
-      icon: photoFlagIcon(cluster, trip),
-      zIndexOffset: markerZIndexOffset(trip, cluster.rank, MARKER_TIER_PHOTO),
-    });
-    marker.on("click", () => openPhoto(tripId, cluster.photos[0].sourceIndex));
+    const marker = makeMarker(
+      cluster.lat, cluster.lon, photoFlagIcon(cluster, trip),
+      markerZIndexOffset(trip, cluster.rank, MARKER_TIER_PHOTO)
+    );
+    marker.getElement().addEventListener("click", () => openPhoto(tripId, cluster.photos[0].sourceIndex));
     return marker;
   });
 
-  state.photoClusterGroupsByTrip[tripId] = L.layerGroup(markers);
-  if (tripId === state.activeTripId && state.photosVisible) {
-    state.photoClusterGroupsByTrip[tripId].addTo(state.map);
-  }
+  state.photoClusterGroupsByTrip[tripId] = markers;
+  // Matches updateClusterVisibility's own `shouldShow` formula exactly (not
+  // just activeTrip+photosVisible) so its `_onMap` bookkeeping stays in
+  // sync no matter which of this function's callers triggered the rebuild
+  // -- otherwise a rebuild triggered directly (buildTripClusterLayer,
+  // refreshActivePhotoClusters) could leave `_onMap` stale and cause
+  // updateClusterVisibility to redundantly rebuild again right after, or
+  // wrongly skip a rebuild once conditions later match again.
+  const shouldShow = tripId === state.activeTripId && state.photosVisible && isPhotoZoom(zoom);
+  if (shouldShow) markers.forEach(m => m.addTo(state.map));
+  markers._onMap = shouldShow;
 }
 
 // Only zoom changes which photos cluster together -- map.latLngToLayerPoint
@@ -523,41 +560,46 @@ function hookPhotoClusterZoomRefresh() {
 // old updatePoiMarkerVisibility/updateTripMarkerVisibility/
 // updatePhotoMarkerVisibility, one per marker family, now that a single
 // marker can carry more than one family's content.
+// No `L.layerGroup`/`map.hasLayer()` equivalent -- each trip's markers are
+// a plain array (see buildTripClusterLayer/rebuildPhotoClusterLayer), and
+// "is this marker currently shown" is tracked by hand via a `_onMap` flag
+// stamped directly onto the marker (or, for the leftover-photo arrays
+// below, onto the array itself, since those are shown/hidden as a whole).
 export function updateClusterVisibility() {
-  Object.entries(state.clusterGroupsByTrip).forEach(([tripId, group]) => {
+  Object.entries(state.clusterGroupsByTrip).forEach(([tripId, markers]) => {
     const isActiveTrip = tripId === state.activeTripId;
-    const isGroupOnMap = state.map.hasLayer(group);
     if (!isActiveTrip) {
-      if (isGroupOnMap) state.map.removeLayer(group);
+      markers.forEach(m => { if (m._onMap) { m.remove(); m._onMap = false; } });
       return;
     }
-    if (!isGroupOnMap) group.addTo(state.map);
     const photoContentShowing = state.photosVisible && isPhotoZoom(state.map.getZoom());
     (state.clustersByTrip[tripId] || []).forEach(cluster => {
       const shouldShow = (cluster.hasStart && state.startsVisible)
         || (cluster.hasPoi && state.poisVisible)
         || (cluster.hasPhoto && photoContentShowing);
-      const isShown = group.hasLayer(cluster.marker);
-      if (shouldShow && !isShown) group.addLayer(cluster.marker);
-      else if (!shouldShow && isShown) group.removeLayer(cluster.marker);
+      const marker = cluster.marker;
+      if (shouldShow && !marker._onMap) { marker.addTo(state.map); marker._onMap = true; }
+      else if (!shouldShow && marker._onMap) { marker.remove(); marker._onMap = false; }
     });
   });
 
   // Leftover-photo pixel clusters follow the same trip-scoping as above,
-  // but as one whole layer group (not per-marker) since they only ever
+  // but as one whole marker array (not per-marker) since they only ever
   // carry photos -- there's no start/POI mix to pick apart marker by
   // marker the way the 30m clusters need.
   Object.keys(state.photoClusterGroupsByTrip).forEach(tripId => {
     const shouldShow = tripId === state.activeTripId && state.photosVisible && isPhotoZoom(state.map.getZoom());
-    const isGroupOnMap = state.map.hasLayer(state.photoClusterGroupsByTrip[tripId]);
-    if (shouldShow && !isGroupOnMap) {
-      // Rebuilt (not just re-added) on becoming visible -- the group may
+    const isShown = !!state.photoClusterGroupsByTrip[tripId]._onMap;
+    if (shouldShow && !isShown) {
+      // Rebuilt (not just re-added) on becoming visible -- the array may
       // have been built empty at initial load, before the map had a zoom
       // level yet (see rebuildPhotoClusterLayer), or be stale from
       // whatever zoom was active the last time this trip was shown.
+      // rebuildPhotoClusterLayer sets `_onMap` itself once it's done.
       rebuildPhotoClusterLayer(tripId);
-    } else if (!shouldShow && isGroupOnMap) {
-      state.map.removeLayer(state.photoClusterGroupsByTrip[tripId]);
+    } else if (!shouldShow && isShown) {
+      state.photoClusterGroupsByTrip[tripId].forEach(m => m.remove());
+      state.photoClusterGroupsByTrip[tripId]._onMap = false;
     }
   });
 }

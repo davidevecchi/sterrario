@@ -181,7 +181,7 @@ export function closestPointOnSegment(latlng, aLat, aLon, bLat, bLon) {
   const lenSq = dLat * dLat + dLon * dLon;
   let t = lenSq === 0 ? 0 : ((latlng.lat - aLat) * dLat + (latlng.lng - aLon) * dLon) / lenSq;
   t = Math.max(0, Math.min(1, t));
-  return L.latLng(aLat + t * dLat, aLon + t * dLon);
+  return { lat: aLat + t * dLat, lng: aLon + t * dLon };
 }
 // Same, but over every consecutive pair in a multi-point run (the day-view
 // hit-lines cover a whole run, not just one segment).
