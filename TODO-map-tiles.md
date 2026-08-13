@@ -1,32 +1,26 @@
 # Map tiles: possible future additions
 
-Deferred from the basemap/overlay switcher in `js/map-layers.js` because
-they're vector styles (MapLibre GL JSON), not plain raster XYZ tiles --
-adding them means vendoring `maplibre-gl` (~250KB) plus a Leaflet bridge
-plugin (e.g. `@maplibre/maplibre-gl-leaflet`), since the app currently
-only knows how to render raster `L.tileLayer`s.
+The app migrated from Leaflet to MapLibre GL JS (see git history), so
+vector styles are no longer blocked on vendoring `maplibre-gl` -- both
+OpenFreeMap (`liberty`/`bright`/`positron`) and VersaTiles
+(`colorful`/`eclipse`/`graybeard`/`neutrino`) are now live in
+`js/map-layers-data.js`.
+
+Still missing -- would need an API key or self-hosted infra we don't have:
 
 - **Liberty Topo** / **Liberty Satellite** -- OSM Liberty Topo style
   (fork of OSM Liberty, OpenMapTiles schema), see
-  https://github.com/nst-guide/osm-liberty-topo. US-only data (NAIP/USFS/
-  USGS contours), so not useful for Sterrario's Alps-based trips anyway
-  unless a US trip gets added.
+  https://github.com/nst-guide/osm-liberty-topo. A keyless style.json
+  does exist (`raw.githubusercontent.com/nst-guide/osm-liberty-topo/gh-pages/style.json`)
+  but it's US-only data (NAIP/USFS/USGS contours, not useful for
+  Sterrario's Alps-based trips) served from a single-maintainer hobby
+  host with no uptime guarantee; no hosted style.json exists at all for
+  a satellite variant.
 - **OpenMapTiles OSM** / **OpenMapTiles OSM Topo** -- the "OSM
   OpenMapTiles" family of styles listed at https://openmaptiles.org/styles/.
   Normally served via MapTiler Cloud, which needs an API key; a
   self-hosted `tileserver-gl` instance could serve these keylessly, but
   none is currently vendored/found.
-- **OpenFreeMap** -- 4 styles (`liberty`, `bright`, `positron`, `dark`),
-  style.json at `https://tiles.openfreemap.org/styles/{style}`. Verified
-  working, genuinely free/keyless forever (not a trial), OpenMapTiles
-  schema. **Strongest candidate if maplibre-gl support ever gets added** --
-  no rate limits found, real production infra, actively maintained.
-- **VersaTiles** -- 4 styles (`colorful`, `eclipse`, `neutrino`,
-  `graybeard`), style.json at
-  `https://tiles.versatiles.org/assets/styles/{style}/style.json`. Also
-  verified working; CC0-licensed (more permissive than OpenFreeMap's
-  attribution requirement), but a newer/smaller project with less of a
-  track record.
 
 Satellite/aerial imagery requiring an API key (deferred -- app currently
 only uses keyless tile services, so none of these are vendored):
@@ -73,9 +67,6 @@ Skipped outright (not deferred, just not worth adding):
   usage policy restricts hotlinking to Wikimedia-family sites, and it
   intermittently 403s for outside requests. Not meant for third-party
   embedding.
-- **NASA GIBS** (MODIS True Color / Blue Marble) -- keyless, but too
-  low-res globally (~z8-9 max useful detail) to be practical for a
-  hiking/cycling trip viewer.
 - **OSM Germany** (`tile.openstreetmap.de`) / **OSM France "osmfr"**
   (`tile.openstreetmap.fr/osmfr`) -- both keyless and working, but
   visually near-identical to the standard OpenStreetMap style already in

@@ -31,7 +31,8 @@ export const state = {
                           // used by updateClusterVisibility to toggle markers individually.
   poisVisible: true,     // headbar toggle -- on top of the trip-scoping in updateClusterVisibility
   startsVisible: true,   // headbar toggle -- on top of the trip-scoping in updateClusterVisibility
-  globeActive: false,    // headbar toggle -- MapLibre projection, "mercator" (flat) vs "globe"
+  tracksVisible: true,   // headbar toggle -- see setTracksVisible in map-layers.js
+  globeActive: true,     // headbar toggle -- MapLibre projection, "mercator" (flat) vs "globe" (default)
   leftoverPhotosByTrip: {},    // tripId -> photo entries the 30m start/POI pass didn't claim
                                 // (see buildTripClusters) -- re-clustered by on-screen pixel
                                 // distance on every zoom/pan, see buildPhotoPixelClusters.

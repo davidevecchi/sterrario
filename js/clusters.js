@@ -274,7 +274,15 @@ function refreshClusterIcons(zoom) {
       if (!cluster.hasPhoto || !cluster.marker) return;
       const { element: newEl, offset } = clusterIcon(cluster, trip, zoom);
       const el = cluster.marker.getElement();
-      el.className = newEl.className;
+      // Plain `el.className = newEl.className` would wholesale-replace the
+      // class list and silently drop "maplibregl-marker" -- the class
+      // MapLibre itself added in the Marker constructor, whose CSS is what
+      // makes this element `position: absolute` and transform-positioned at
+      // all. Without it the element falls into normal document flow (static
+      // position), stacking markers vertically instead of sitting on their
+      // real lngLat -- so only swap in the icon's own classes, keeping
+      // whatever else (like "maplibregl-marker") was already there.
+      el.className = `${newEl.className} maplibregl-marker`;
       el.innerHTML = newEl.innerHTML;
       el.style.width = newEl.style.width;
       el.style.height = newEl.style.height;
@@ -531,6 +539,34 @@ function refreshActivePhotoClusters() {
   rebuildPhotoClusterLayer(state.activeTripId);
 }
 
+// Defensive safety net: forces every currently-registered marker (day-
+// start/POI clusters and leftover-photo clusters alike, on- or off-map)
+// to recompute its own screen position against whatever the map's camera
+// actually is *right now*, by re-setting its lngLat to its own current
+// value -- `setLngLat()` always triggers Marker's internal `_update()`
+// (which reprojects via the live `map.project()`), so this is a cheap,
+// side-effect-free way to guarantee no marker is ever left showing a
+// position baked in against a stale/past camera state, no matter what
+// sequence of creates/adds/removes/icon-refreshes it went through to get
+// here. Exists because a real, reproduced bug showed some markers stuck
+// displaying a position wildly inconsistent with their own real lngLat
+// (proven by comparing two real markers' geographic delta -- ~34:1 lat:lon
+// -- against their on-screen pixel delta, which was ~1:1: no single valid
+// camera can produce that from correct live positions) -- most likely
+// because MapLibre's Marker only re-projects on "move"/"moveend", and a
+// marker isn't listening for those before its first `.addTo()`, so
+// whatever zoom/pan happens in between construction and being shown can
+// leave it holding a position computed against a camera state that's
+// long gone by the time it actually appears.
+function refreshAllMarkerPositions() {
+  Object.values(state.clusterGroupsByTrip).forEach(markers => {
+    markers.forEach(m => m.setLngLat(m.getLngLat()));
+  });
+  Object.values(state.photoClusterGroupsByTrip).forEach(markers => {
+    markers.forEach(m => m.setLngLat(m.getLngLat()));
+  });
+}
+
 // Crossing PHOTO_MIN_ZOOM also flips whether any hasPhoto cluster shows its
 // thumbnail at all (see clusterIcon/refreshClusterIcons), not just how the
 // active trip's leftover photos pixel-cluster -- both need redoing on every
@@ -539,6 +575,7 @@ function onPhotoClusterZoomEnd() {
   refreshClusterIcons(state.map.getZoom());
   refreshActivePhotoClusters();
   updateClusterVisibility();
+  refreshAllMarkerPositions();
 }
 
 let photoClusterZoomHooked = false;
@@ -546,6 +583,12 @@ function hookPhotoClusterZoomRefresh() {
   if (photoClusterZoomHooked) return;
   photoClusterZoomHooked = true;
   state.map.on("zoomend", onPhotoClusterZoomEnd);
+  // Plain pans (no zoom change) don't affect which photos pixel-cluster
+  // or which icon a hasPhoto marker shows, so onPhotoClusterZoomEnd's
+  // other work would be wasted here -- but the same staleness risk
+  // applies to *any* camera change, not just zoom, so this still runs
+  // the position safety net on every "moveend" too.
+  state.map.on("moveend", refreshAllMarkerPositions);
 }
 
 // Waypoints (trip POIs), trip/day starts, and photos only make sense in

@@ -5,6 +5,7 @@ import { loadTrips, loadPhotos } from "./data.js";
 import { assignTripColors, buildAltitudeBuckets, buildAltitudeLegendBuckets } from "./colors.js";
 import {
   initMap, initTrackLayers, buildDayLayers, buildStartDotLayers, startDotId, tripTrackDrawOrder, recenterMap,
+  computeBounds, setTracksVisible,
 } from "./map-layers.js";
 import { buildTripClusterLayer, updateClusterVisibility } from "./clusters.js";
 import { renderExploreLegend, setExploreLegendMode, TRIP_SORT_DEFAULT_DIR, TRACK_SORT_DEFAULT_DIR, renderPicker, showAllTripsFooter } from "./sidebar.js";
@@ -109,6 +110,11 @@ function wireUi() {
       btn.setAttribute("aria-pressed", String(active));
     });
   }
+  wireHeadbarToggle("toggleTracks", "conversion_path", () => {
+    state.tracksVisible = !state.tracksVisible;
+    setTracksVisible(state.tracksVisible);
+    return state.tracksVisible;
+  });
   wireHeadbarToggle("toggleStarts", "flag", () => {
     state.startsVisible = !state.startsVisible;
     updateClusterVisibility();
@@ -123,7 +129,7 @@ function wireUi() {
     setPhotosVisible(!state.photosVisible);
     return state.photosVisible;
   });
-  wireHeadbarToggle("toggleGlobe", "public", () => {
+  wireHeadbarToggle("toggleGlobe", "globe", () => {
     state.globeActive = !state.globeActive;
     state.map.setProjection({ type: state.globeActive ? "globe" : "mercator" });
     return state.globeActive;
@@ -353,8 +359,10 @@ function wireUi() {
 }
 
 async function main() {
+  console.time("[perf] loadTrips");
   themeChartDefaults();
   const { trips, ele_stats } = await loadTrips();
+  console.timeEnd("[perf] loadTrips");
   state.trips = trips;
   assignTripColors(trips);
   state.eleRange = ele_stats;
@@ -370,14 +378,24 @@ async function main() {
     });
   });
 
-  const map = initMap();
+  console.time("[perf] initMap");
+  // Computed straight from the raw trip data (state.dayLayers doesn't
+  // exist yet -- that's only built below) so the map can open already
+  // framed on every trip's real extent, with no gliding fit-bounds
+  // animation once tracks load later (see initMap's own bounds param).
+  const allPoints = [].concat(...trips.map(trip => [].concat(...trip.tracks.map(t => t.points))));
+  const bounds = allPoints.length ? computeBounds(allPoints) : null;
+  const map = initMap(bounds);
+  console.timeEnd("[perf] initMap");
 
   // Photos are loaded before any markers are built (traded off against a
   // small delay to first paint of the start/POI markers) so
   // buildTripClusterLayer can fold each trip's photos into its unified
   // start/POI/photo clustering pass in one go, rather than needing a
   // second marker-rebuild pass once photos land later.
+  console.time("[perf] loadPhotos");
   const photos = await loadPhotos();
+  console.timeEnd("[perf] loadPhotos");
   const photosByTrip = {};
   photos.forEach(photo => {
     if (!photo.trip_id) return;
@@ -386,6 +404,7 @@ async function main() {
   Object.values(photosByTrip).forEach(list => list.sort((a, b) => (a.t || "").localeCompare(b.t || "")));
   state.photosByTrip = photosByTrip;
 
+  console.time("[perf] buildDayLayers+clusters");
   trips.forEach(trip => {
     tripTrackDrawOrder(trip).forEach(track => {
       state.dayLayers[track.id] = buildDayLayers(trip, track);
@@ -401,12 +420,15 @@ async function main() {
       state.dayLayers[startDotId(track.id)] = buildStartDotLayers(trip, track);
     });
   });
+  console.timeEnd("[perf] buildDayLayers+clusters");
   // Builds and adds every MapLibre source/layer backing track rendering
   // now that state.dayLayers is fully populated -- see initTrackLayers.
   // Awaited since MapLibre can't add sources/layers until the map's style
   // has finished loading, which selectAll()/applyColorMode() right below
   // assume has already happened (they read/write those sources directly).
+  console.time("[perf] initTrackLayers");
   await initTrackLayers();
+  console.timeEnd("[perf] initTrackLayers");
 
   renderExploreLegend();
   wireUi();
@@ -419,11 +441,14 @@ async function main() {
     togglePhotosBtn.setAttribute("aria-pressed", "true");
   }
 
+  console.time("[perf] selectAll");
   if (trips.length) {
     selectAll();
   } else {
     map.jumpTo({ center: [11, 46], zoom: 10 });
   }
+  console.timeEnd("[perf] selectAll");
 }
 
-main();
+console.time("[perf] main total");
+main().then(() => console.timeEnd("[perf] main total"));

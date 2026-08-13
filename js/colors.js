@@ -275,9 +275,9 @@ export const ACTIVITY_DASH = {
 // small sizes markers render at); falls back to the .png for activities
 // that only have a raster icon.
 export const ACTIVITY_ICON = {
-  touring: "res/touring.svg", road: "res/road.svg", gravel: "res/gravel.svg",
-  bike: "res/bike.svg", mtb: "res/mtb.svg", hike: "res/hike.png",
-  walk: "res/walk.png", run: "res/run.png", alpine: "res/alpine.png",
+  touring: "res/activities/touring.svg", road: "res/activities/road.svg", gravel: "res/activities/gravel.svg",
+  bike: "res/activities/bike.svg", mtb: "res/activities/mtb.svg", hike: "res/activities/hike.png",
+  walk: "res/activities/walk.png", run: "res/activities/run.png", alpine: "res/activities/alpine.png",
 };
 export function dayIconHtml(track) {
   const src = ACTIVITY_ICON[track.activity];

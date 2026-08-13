@@ -42,6 +42,7 @@ export const ICO_CODEPOINT = {
   // Trip-start/end milestone card (see showMilestone's "boundary" branch).
   trip_start: "\ue86b", // change_history
   trip_end: "\uef4a", // circle
+  conversion_path: "\uf0c1", // circle
 
   // Map layer-switcher pictograms (js/map-layers.js's LAYER_ICON/buildLayerSwitcher).
   satellite_alt: "\ueb3a",
@@ -54,13 +55,14 @@ export const ICO_CODEPOINT = {
   downhill_skiing: "\ue509",
   route: "\ueacd",
   layers: "\ue53b",
-  public: "\ue80b",
+  globe: "\ue64c",
   explore: "\ue87a",
   altitude: "\uf873",
   pin_road: "\u{fff2d}",
   edit_location_alt: "\ue1c5",
   my_location: "\ue55c",
-  // _: "\u",
+  fiber_new: "\ue05e",
+  history_edu: "\uea3e",
 };
 // Icon name from the POI's own `#ico=` tag, or the generic default if absent.
 export function poiIcoName(poi) {
