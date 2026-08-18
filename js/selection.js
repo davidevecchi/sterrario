@@ -7,6 +7,14 @@ import { renderWholeTripChart, renderDayChart } from "./chart.js";
 import { fitBoundsForTracks, visibleTracks, updateSelectionHighlight, applyColorMode } from "./map-layers.js";
 import { updateClusterVisibility } from "./clusters.js";
 
+// Shared with app.js's own manual chevron-click toggle (js/app.js's
+// #pickerToggle listener) -- same class/chevron-glyph convention, just
+// triggered automatically by navigation instead of a click.
+function setPickerCollapsed(collapsed) {
+  document.getElementById("pickerPanel").classList.toggle("collapsed", collapsed);
+  document.getElementById("pickerChevron").textContent = collapsed ? "▸" : "▾";
+}
+
 export function selectAll() {
   // Only reset the direction when actually leaving a trip (not on a
   // no-op re-selectAll), so it doesn't clobber a manual toggle done while
@@ -14,6 +22,7 @@ export function selectAll() {
   if (state.activeTripId !== null) state.tripSortDir = TRIP_SORT_DEFAULT_DIR[state.tripSort];
   state.activeTripId = null;
   state.activeDayId = null;
+  setPickerCollapsed(false);
   renderPicker();
   renderBreadcrumb();
   document.getElementById("poiListPanel").classList.add("hidden");
@@ -37,7 +46,13 @@ export function selectTrip(tripId, { recenter = true } = {}) {
   // Only reset when actually entering a trip from the root ("all") level
   // -- going trip <-> track within the same trip keeps whatever direction
   // is currently active there.
-  if (state.activeTripId === null) state.tripSortDir = TRACK_SORT_DEFAULT_DIR[state.tripSort];
+  if (state.activeTripId === null) {
+    state.tripSortDir = TRACK_SORT_DEFAULT_DIR[state.tripSort];
+    // The full trip list is only useful for picking a trip -- once one is
+    // active, collapse it out of the way (the topbar breadcrumb's own hover
+    // dropdown, and this same panel's back button, cover re-picking).
+    setPickerCollapsed(true);
+  }
   state.activeTripId = tripId;
   state.activeDayId = null;
   const trip = state.tripById[tripId];

@@ -62,6 +62,25 @@ Alps-region providers investigated but not usable as-is:
 - **Trentino Geocatalogo** -- only WebGIS portal pages found; no
   concrete keyless WMTS/XYZ tile endpoint surfaced.
 
+Speleology/caving overlay investigated, no keyless tile source found:
+- **"OpenCaveMap"** -- no such service exists; `opencavemap.org` /
+  `www.opencavemap.org` don't resolve (DNS failure). Do not re-add.
+- **grottomap.org** ("Carte Cavités") -- a Leaflet front-end over
+  standard OSM/OpenTopoMap/Esri base tiles with cave-entrance points
+  overlaid client-side from `grottomap.org/entrances.json` (a single
+  ~2.4MB unpaginated array of `[lat, lon, ...]` pairs, no documented
+  license) plus small `/api/searchByName` and `/api/searchByCoordinate`
+  endpoints. No raster/vector tile pyramid -- `/tiles` 404s.
+- **grottocenter.org** -- the real underlying open-source cave database
+  (GitHub org `GrottoCenter`, AGPL-3.0 code) behind grottomap.org, with
+  a documented REST API at `api.grottocenter.org/api/v1` (Swagger spec,
+  data CC BY-SA 3.0) exposing `entrances`/`caves`/`geoloc`/etc. as JSON
+  records via search endpoints -- no tile server component at all.
+- Adding cave data would require a custom GeoJSON-source integration
+  (fetch from `api.grottocenter.org`'s search endpoint, paginate,
+  convert to a MapLibre GeoJSON source, add CC BY-SA attribution), not
+  a `tileLayer()` one-liner like the rest of `OVERLAYS`.
+
 Skipped outright (not deferred, just not worth adding):
 - **Wikimedia Maps** (`maps.wikimedia.org`) -- keyless, but its tile
   usage policy restricts hotlinking to Wikimedia-family sites, and it

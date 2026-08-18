@@ -1,12 +1,26 @@
 
+/* Floats as its own rounded card above the map (see css/layout.css's shared
+   grid-area:map with #mapWrap) instead of a flush, square-cornered docked
+   footer -- same offset-shadow/double-border "stamped card" language as
+   .card (css/sidebar.css) and .layer-switcher-panel. */
 #elevationPanel {
-  grid-area: elevation;
+  align-self: end;
+  justify-self: stretch;
+  z-index: 15;
+  margin: 0 16px 16px;
+  height: var(--elevation-h);
   background: var(--bg-panel);
-  border-top: 3px double var(--border-strong);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  box-shadow: 4px 4px 0 var(--shadow-color);
   display: flex;
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
+  transition: height 0.2s ease;
+}
+#app.elevation-collapsed #elevationPanel {
+  height: var(--elevation-h-collapsed);
 }
 #elevationHeader {
   display: flex;
@@ -17,7 +31,8 @@
 }
 #elevationDayInfo { flex: 1; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; font-family: var(--font-display); letter-spacing: 0.02em; }
 #elevationDayInfo b { color: var(--text); }
-#elevationDayInfo .picker-context { margin: 0; }
+#elevationDayInfo .msym { font-size: 15px; --msym-opsz: 20; vertical-align: -2px; color: var(--accent-2); margin-right: 1px; }
+#elevationDayInfo .stat-sep { color: var(--text-muted); margin: 0 1px; }
 #elevationHeader #colorModeToggle { width: auto; flex-shrink: 0; margin: 0 14px; }
 #elevationHeader #colorModeToggle.hidden { display: none; }
 #elevationCollapse {

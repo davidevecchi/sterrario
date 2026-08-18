@@ -63,6 +63,13 @@ export const ICO_CODEPOINT = {
   my_location: "\ue55c",
   fiber_new: "\ue05e",
   history_edu: "\uea3e",
+
+  // Elevation-footer stat row (js/chart.js's renderFooterBackInfo).
+  schedule: "\uefd6",
+  trending_up: "\ue8e5",
+  trending_down: "\ue8e3",
+  chevron_right: "\ue5cc",
+  category: "\ue574",
 };
 // Icon name from the POI's own `#ico=` tag, or the generic default if absent.
 export function poiIcoName(poi) {

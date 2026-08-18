@@ -43,6 +43,7 @@ DISPLAY_MAX_SIDE = 1600
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp"}
 
 GPS_TAG = next((k for k, v in ExifTags.TAGS.items() if v == "GPSInfo"), 34853)
+EXIF_IFD_TAG = next((k for k, v in ExifTags.TAGS.items() if v == "ExifOffset"), 34665)
 DATETIME_ORIGINAL_TAG = next((k for k, v in ExifTags.TAGS.items() if v == "DateTimeOriginal"), 36867)
 DATETIME_TAG = next((k for k, v in ExifTags.TAGS.items() if v == "DateTime"), 306)
 
@@ -137,10 +138,11 @@ def read_gps_and_time(path, search_root):
         except (KeyError, TypeError, ValueError, ZeroDivisionError):
             lat = lon = None
 
-    dt_str = exif.get(DATETIME_ORIGINAL_TAG) or exif.get(DATETIME_TAG)
-    if dt_str:
+    exif_ifd = exif.get_ifd(EXIF_IFD_TAG) if hasattr(exif, "get_ifd") else None
+    dt_original_str = (exif_ifd or {}).get(DATETIME_ORIGINAL_TAG) or exif.get(DATETIME_ORIGINAL_TAG)
+    if dt_original_str:
         try:
-            dt = datetime.strptime(dt_str, "%Y:%m:%d %H:%M:%S")
+            dt = datetime.strptime(dt_original_str, "%Y:%m:%d %H:%M:%S")
         except ValueError:
             dt = None
 
@@ -148,7 +150,15 @@ def read_gps_and_time(path, search_root):
 
     sidecar_coords, sidecar_dt = read_xmp_sidecar(path, search_root)
     coords = sidecar_coords or coords
-    dt = sidecar_dt or dt
+    dt = dt or sidecar_dt
+
+    if dt is None:
+        dt_str = exif.get(DATETIME_TAG)
+        if dt_str:
+            try:
+                dt = datetime.strptime(dt_str, "%Y:%m:%d %H:%M:%S")
+            except ValueError:
+                dt = None
 
     if dt is None:
         dt = parse_filename_dt(path)
@@ -156,7 +166,7 @@ def read_gps_and_time(path, search_root):
     return coords, dt
 
 
-FILENAME_DT_RE = re.compile(r"(\d{4})(\d{2})(\d{2})[_-](\d{2})(\d{2})(\d{2})")
+FILENAME_DT_RE = re.compile(r"(\d{4})\D*(\d{2})\D*(\d{2})\D*(\d{2})\D*(\d{2})\D*(\d{2})")
 
 
 def parse_filename_dt(path):

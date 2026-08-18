@@ -18,7 +18,7 @@ import {fmtDate, realDayNumber, toRoman} from "./format.js";
 import {selectDay, selectTrip} from "./selection.js";
 import {clearChartHover, onTrackHover} from "./chart.js";
 import {perfMark} from "./perf-debug.js";
-import {ACTIVE_BASEMAPS, ACTIVE_OVERLAYS, SWITCHER_BUTTON_ICONS} from "./map-layers-data.js";
+import {ACTIVE_BASEMAPS, ACTIVE_OVERLAYS, SWITCHER_BUTTON_ICONS, TILES_CATEGORIES} from "./map-layers-data.js";
 
 // Stroke width for the legend-hover highlight only -- the base map/chart
 // lines stay their normal thickness; just the hovered category's segments
@@ -145,6 +145,63 @@ function removeDescriptorFromMap(map, desc) {
 // that could now never come again, hanging forever. One shared promise,
 // subscribed exactly once at the earliest possible point, removes the race.
 let mapReady;
+
+// Asymmetric map padding, bottom-heavy by however much of the map's own
+// viewport the floating elevation card (#elevationPanel) currently covers
+// -- read from its actual laid-out position rather than hardcoding
+// --elevation-h/-collapsed, so centering stays correct whichever state
+// it's in (and needs no update if that CSS ever changes). Falls back to a
+// plain 30px if the card isn't there/laid out yet for some reason.
+//
+// Used two ways: as the map's *persistent* transform padding (see
+// applyMapPadding/initMap below), which is what keeps the globe/map's own
+// notion of "center" in the actually-visible area above the card rather
+// than the raw canvas center (half hidden behind it) -- and as one-off
+// fitBounds() padding (fitBoundsForTracks), which additionally needs it at
+// the moment of framing a specific selection.
+function mapPadding() {
+    const wrap = document.getElementById("mapWrap");
+    const panel = document.getElementById("elevationPanel");
+    const wrapRect = wrap.getBoundingClientRect();
+    const panelRect = panel?.getBoundingClientRect();
+    const bottom = panelRect ? Math.max(30, Math.round(wrapRect.bottom - panelRect.top) + 12) : 30;
+    return {top: 30, bottom, left: 30, right: 30};
+}
+
+// MapLibre's own fitBounds()/cameraForBounds() gets the *zoom* right for
+// asymmetric padding (top !== bottom, our normal case with the elevation
+// card only eating into the bottom) but not the *center*: verified by
+// comparing the fitted center against `bounds.getCenter()` -- with symmetric
+// padding they match almost exactly, but with our top:30/bottom:~270 split
+// the fitted center's latitude drifts by a large fraction of the bbox's own
+// height towards the smaller-padding side. Once the (correct) zoom is
+// known, simply overriding the center with the bounds' own geographic
+// center is what actually lands the fitted box in the middle of the space
+// visible above the elevation card, at any zoom level.
+//
+// Computed via cameraForBounds() (read-only -- doesn't move the map) rather
+// than fitBounds()-then-correct, specifically so the corrected center can be
+// baked into the *animated* transition itself: fitBounds()-then-correct-on-
+// moveend flies to the (wrong) fitBounds center first and only snaps to the
+// right one at the very end, which reads as a visible last-frame jump.
+function cameraForBoundsCorrected(map, bounds, padding) {
+    // `padding` already fully determined the returned center/zoom -- passed
+    // on to flyTo() too, it would shift the camera a second time on top of
+    // that (fitBounds's own _fitInternal() strips it for the same reason).
+    const {padding: _unused, ...camera} = map.cameraForBounds(bounds, {padding});
+    return {...camera, center: bounds.getCenter()};
+}
+
+// Re-applies the padding above to the live map -- setPadding() shifts the
+// view so whatever geographic point is currently "center" re-centers
+// itself within the new padded box, which is exactly what's needed right
+// after the elevation card's height changes (expanding/collapsing) so the
+// globe/map stays centered in the space actually visible above it. Call
+// after that card's own CSS height transition finishes, not before (its
+// bounding rect mid-transition would give a stale/intermediate padding).
+export function applyMapPadding() {
+    if (state.map) state.map.setPadding(mapPadding());
+}
 // `bounds`, when given (the real all-trips bbox, computed in app.js
 // straight from the loaded trip data before this ever runs), becomes the
 // map's *initial* camera directly via the constructor's own bounds/
@@ -157,11 +214,24 @@ export function initMap(bounds) {
     const map = new maplibregl.Map({
         container: "map",
         style: {version: 8, sources: {}, layers: []},
+        // Persistent transform padding (not just this construction's own
+        // one-off fitBoundsOptions below) -- see mapPadding()/
+        // applyMapPadding() for why: it's what keeps "center" meaning
+        // "center of the visible area above the elevation card" for every
+        // future camera operation too, not just this first frame.
+        padding: mapPadding(),
         ...(bounds
-            ? {bounds, fitBoundsOptions: {padding: 30}}
+            ? {bounds, fitBoundsOptions: {padding: mapPadding()}}
             : {center: [11, 46], zoom: 10}),
         attributionControl: false,
     });
+    // Same fitBounds()-vs-asymmetric-padding center bug as fitBoundsForTracks
+    // (see cameraForBoundsCorrected) -- the constructor's own `bounds`/
+    // `fitBoundsOptions` gets the initial zoom right but not the center. No
+    // animation is running yet at construction time (nothing's even
+    // rendered), so correcting it with an instant jumpTo right after is
+    // enough -- no visible jump to avoid.
+    if (bounds) map.jumpTo({center: new maplibregl.LngLatBounds(bounds[0], bounds[1]).getCenter()});
     mapReady = new Promise((resolve) => {
         if (map.isStyleLoaded()) resolve();
         else map.once("load", resolve);
@@ -184,7 +254,14 @@ export function initMap(bounds) {
             "atmosphere-blend": 0.35,
         });
     });
+    // Top-right, stacked above the app's own recenter/layer-switcher stamp
+    // buttons (css/map-markers.css's .map-recenter-btn/.layer-switcher,
+    // pushed down to clear this native stack's height) -- top-left is kept
+    // free for the floating breadcrumb pill (see #breadcrumb's
+    // .map-breadcrumb styling).
     map.addControl(new maplibregl.NavigationControl());
+    map.addControl(new maplibregl.GeolocateControl({positionOptions: {enableHighAccuracy: true}, trackUserLocation: true}));
+    map.addControl(new maplibregl.ScaleControl({maxWidth: 120, unit: "metric"}), "bottom-right");
     map.addControl(new maplibregl.AttributionControl({compact: true}));
     // The compact attribution control (a <details> element) shows its text
     // -- collapsed vs. expanded is keyed off its "maplibregl-compact-show"
@@ -233,126 +310,142 @@ export function initMap(bounds) {
         map.resize();
         map.jumpTo({center: map.getCenter()});
     }).observe(document.getElementById("map"));
+    // Keeps the map's persistent padding (see mapPadding()/applyMapPadding)
+    // in step with the elevation card's own size -- fires continuously
+    // through its expand/collapse CSS transition (smoothly re-centering as
+    // it goes) as well as on any plain window resize, so there's no separate
+    // one-off call needed at either of those call sites.
+    new ResizeObserver(applyMapPadding).observe(document.getElementById("elevationPanel"));
     state.map = map;
     return map;
 }
 
 
-// Custom two-button layer switcher, replacing Leaflet's own L.control.layers
-// -- one stamp-style button for basemaps (mutually exclusive) and one for
-// overlays (independent checkboxes), each revealing its own flyout panel on
-// hover (desktop) or a tap-to-toggle (touch, via the "open" class, since
-// touch has no hover state to rely on). Built as a plain DOM node appended
-// to #mapWrap rather than a Leaflet control -- same approach as
-// .map-recenter-btn (see css/map-markers.css), which already sits outside
-// Leaflet's own control container with no z-index/positioning conflict
-// against the zoom control that stays top-left.
+// One "Mappe" stamp button revealing a single flyout panel (hover on
+// desktop, tap-to-toggle via the "open" class on touch) with four stacked
+// sections: a fixed-category quick-pick row (TILES_CATEGORIES from
+// map-layers-data.js, each clicking straight to a hand-picked default
+// basemap and filtering the two lists below to it), the basemap radio list
+// ("Mappe"), the overlay checkbox list ("Overlay"), and the relocated
+// track/waypoint/POI/photo/globe visibility toggles ("Visualizzazione",
+// moved here from the topbar -- see index.html's #topbarToggles). Built as
+// a plain DOM node appended to #mapWrap rather than a Leaflet control --
+// same approach as .map-recenter-btn (see css/map-markers.css), which
+// already sits outside Leaflet's own control container with no z-index/
+// positioning conflict against the zoom control that stays top-left.
 function buildLayerSwitcher(map, basemapCatalog, overlayCatalog, defaultBase) {
     const root = document.createElement("div");
     root.className = "layer-switcher";
 
-    const closeAll = () => root.querySelectorAll(".layer-switcher-group.open").forEach(g => g.classList.remove("open"));
+    const group = document.createElement("div");
+    group.className = "layer-switcher-group";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "layer-switcher-btn";
+    btn.title = "Mappe e livelli";
+    btn.setAttribute("aria-label", "Mappe e livelli");
+    btn.innerHTML = icoHtml(SWITCHER_BUTTON_ICONS.base);
+    const panel = document.createElement("div");
+    panel.className = "layer-switcher-panel ls-panel";
 
-    const buildGroup = (kind, icon, title, entries, onPick) => {
-        const group = document.createElement("div");
-        group.className = "layer-switcher-group";
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "layer-switcher-btn";
-        btn.title = title;
-        btn.setAttribute("aria-label", title);
-        btn.innerHTML = icoHtml(icon);
-        const panel = document.createElement("div");
-        panel.className = "layer-switcher-panel";
-        const heading = document.createElement("div");
-        heading.className = "layer-switcher-title";
-        heading.textContent = title;
-        panel.appendChild(heading);
-        // Count how many layers use each icon and get first layer name for each icon
+    const closeAll = () => group.classList.remove("open");
+    btn.addEventListener("click", () => group.classList.toggle("open"));
+
+    // Same icon-grouped sort as before (still relevant within "Tutti"/
+    // "Altro", where several icons mix together; within any of the 6 named
+    // categories every entry already shares one icon, so this just falls
+    // back to a plain alphabetical sort).
+    function sortEntries(entries) {
         const iconCounts = {};
         const iconFirstNames = {};
-        for (const [name, entry] of Object.entries(entries)) {
+        for (const [name, entry] of entries) {
             iconCounts[entry.icon] = (iconCounts[entry.icon] || 0) + 1;
-            if (!iconFirstNames[entry.icon] || name < iconFirstNames[entry.icon]) {
-                iconFirstNames[entry.icon] = name;
-            }
+            if (!iconFirstNames[entry.icon] || name < iconFirstNames[entry.icon]) iconFirstNames[entry.icon] = name;
         }
-
-        const sortedEntries = Object.entries(entries).sort(([nameA, a], [nameB, b]) => {
-            // Sort by icon count (descending)
-            const countA = iconCounts[a.icon];
-            const countB = iconCounts[b.icon];
+        return [...entries].sort(([nameA, a], [nameB, b]) => {
+            const countA = iconCounts[a.icon], countB = iconCounts[b.icon];
             if (countA !== countB) return countB - countA;
-
-            // Same icon count: group by icon, sort groups by first layer name alphabetically
-            if (a.icon !== b.icon) {
-                return iconFirstNames[a.icon].localeCompare(iconFirstNames[b.icon]);
-            }
-
-            // Same icon: move region-specific layers to bottom, then sort by name
-            const hasRegionA = !!a.region;
-            const hasRegionB = !!b.region;
+            if (a.icon !== b.icon) return iconFirstNames[a.icon].localeCompare(iconFirstNames[b.icon]);
+            const hasRegionA = !!a.region, hasRegionB = !!b.region;
             if (hasRegionA !== hasRegionB) return hasRegionA ? 1 : -1;
-
-            // Same icon and same region status: sort by layer name
             return nameA.localeCompare(nameB);
         });
-        for (const [name, entry] of sortedEntries) {
-            const row = document.createElement("div");
-            row.className = "layer-switcher-row";
-            row.dataset.name = name;
-            const description = entry.description;
-            if (description) row.title = description;
-            const iconSpan = document.createElement("span");
-            iconSpan.className = "layer-switcher-row-icon";
-            iconSpan.innerHTML = icoHtml(entry.icon);
-            const label = document.createElement("span");
-            label.className = "layer-switcher-row-label";
-            label.textContent = name;
-            row.append(iconSpan, label);
+    }
 
-            // Add region flag if region exists
-            if (entry.region) {
-                const flagImg = document.createElement("img");
-                flagImg.className = "layer-switcher-row-flag";
-                flagImg.src = `res/flags/4x3/${entry.region}.svg`;
-                flagImg.alt = entry.region;
-                row.appendChild(flagImg);
-            }
-
-            row.addEventListener("click", () => {
-                const isRadio = kind === "radio";
-                const isChecked = isRadio ? true : !row.classList.contains("selected");
-
-                if (isRadio) {
-                    // For radio, deselect all other rows in this panel
-                    panel.querySelectorAll(".layer-switcher-row").forEach(r => r.classList.remove("selected"));
-                }
-
-                if (isChecked) {
-                    row.classList.add("selected");
-                } else {
-                    row.classList.remove("selected");
-                }
-
-                Promise.resolve(onPick(name, isChecked)).catch(err => console.error(`layer switch failed (${name})`, err));
-            });
-            panel.appendChild(row);
+    function buildRow(name, entry, isActive, onPick) {
+        const row = document.createElement("div");
+        row.className = "layer-switcher-row";
+        if (isActive) row.classList.add("selected");
+        row.dataset.name = name;
+        if (entry.description) row.title = entry.description;
+        const iconSpan = document.createElement("span");
+        iconSpan.className = "layer-switcher-row-icon";
+        iconSpan.innerHTML = icoHtml(entry.icon);
+        const label = document.createElement("span");
+        label.className = "layer-switcher-row-label";
+        label.textContent = name;
+        row.append(iconSpan, label);
+        if (entry.region) {
+            const flagImg = document.createElement("img");
+            flagImg.className = "layer-switcher-row-flag";
+            flagImg.src = `res/flags/4x3/${entry.region}.svg`;
+            flagImg.alt = entry.region;
+            row.appendChild(flagImg);
         }
-
-        // Set initial selection state
-        if (kind === "radio" && defaultBase) {
-            const defaultRow = panel.querySelector(`.layer-switcher-row[data-name="${defaultBase}"]`);
-            if (defaultRow) defaultRow.classList.add("selected");
-        }
-        btn.addEventListener("click", () => {
-            const wasOpen = group.classList.contains("open");
-            closeAll();
-            if (!wasOpen) group.classList.add("open");
+        row.addEventListener("click", (e) => {
+            e.stopPropagation();
+            Promise.resolve(onPick(name)).catch(err => console.error(`layer switch failed (${name})`, err));
         });
-        group.append(btn, panel);
-        return group;
-    };
+        return row;
+    }
+
+    // --- Visualizzazione ---
+    const vizHeading = document.createElement("div");
+    vizHeading.className = "layer-switcher-title";
+    vizHeading.textContent = "Visualizzazione";
+    const vizRow = document.getElementById("topbarToggles");
+    vizRow.removeAttribute("hidden");
+    panel.append(vizHeading, vizRow);
+
+    // --- Mappe (basemap, radio) ---
+    const mapHeading = document.createElement("div");
+    mapHeading.className = "layer-switcher-title";
+    mapHeading.textContent = "Mappe";
+    panel.append(mapHeading);
+
+    // --- category quick-pick row ("(Carousel)" in res/original/ui.svg --
+    // horizontally scrollable since 7 icons+labels don't always fit) ---
+    const catRow = document.createElement("div");
+    catRow.className = "ls-categories";
+    // Always exactly one category active -- the Mappe/Overlay lists below
+    // only ever show that category's entries, never the full unfiltered
+    // catalog, so there's no "off" state to click back to.
+    let selectedCategory = null;
+    const catButtons = new Map();
+    function makeCatButton(name, icon) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "ls-cat-btn";
+        b.innerHTML = `${icoHtml(icon)}<span class="ls-cat-label">${name}</span>`;
+        b.addEventListener("click", () => selectCategory(name));
+        catButtons.set(name, b);
+        catRow.appendChild(b);
+    }
+    Object.entries(TILES_CATEGORIES).forEach(([cat, {icon}]) => makeCatButton(cat, icon));
+    panel.appendChild(catRow);
+
+    const baseList = document.createElement("div");
+    baseList.className = "layer-switcher-list";
+    panel.append(baseList);
+
+
+    // --- Overlays (checkbox, 2-col) ---
+    const ovHeading = document.createElement("div");
+    ovHeading.className = "layer-switcher-title";
+    ovHeading.textContent = "Overlay";
+    const ovList = document.createElement("div");
+    ovList.className = "ls-overlay-grid";
+    panel.append(ovHeading, ovList);
 
     // Each basemap/overlay factory is called lazily, only once actually
     // picked (unlike the old eager `BASEMAPS[name]()` for all ~30 entries up
@@ -373,6 +466,7 @@ function buildLayerSwitcher(map, basemapCatalog, overlayCatalog, defaultBase) {
         await addDescriptorToMap(map, desc, BASEMAP_CEILING_ID);
         activeBaseName = name;
         activeBaseDesc = desc;
+        renderLists();
         if (outgoingDesc) {
             await new Promise((resolve) => map.once("idle", resolve));
             removeDescriptorFromMap(map, outgoingDesc);
@@ -384,21 +478,55 @@ function buildLayerSwitcher(map, basemapCatalog, overlayCatalog, defaultBase) {
         const desc = await overlayCatalog[name].factory(slug(`ov-${name}`));
         await addDescriptorToMap(map, desc, mapLayerFloor || undefined);
         activeOverlayDescs.set(name, desc);
+        renderLists();
     };
     const deactivateOverlay = (name) => {
         const desc = activeOverlayDescs.get(name);
         if (desc) removeDescriptorFromMap(map, desc);
         activeOverlayDescs.delete(name);
+        renderLists();
     };
 
-    const baseGroup = buildGroup("radio", SWITCHER_BUTTON_ICONS.base, "Mappa", basemapCatalog, (name, checked) => {
-        if (!checked || name === activeBaseName) return;
-        return activateBasemap(name);
-    });
-    const overlayGroup = buildGroup("checkbox", SWITCHER_BUTTON_ICONS.overlay, "Overlay", overlayCatalog, (name, checked) => {
-        return checked ? activateOverlay(name) : deactivateOverlay(name);
-    });
-    root.append(baseGroup, overlayGroup);
+    function renderLists() {
+        const baseEntries = sortEntries(Object.entries(basemapCatalog).filter(([, e]) => e.category === selectedCategory));
+        baseList.innerHTML = "";
+        baseEntries.forEach(([name, entry]) => {
+            baseList.appendChild(buildRow(name, entry, name === activeBaseName, (n) => {
+                if (n === activeBaseName) return;
+                return activateBasemap(n);
+            }));
+        });
+
+        const overlayEntries = sortEntries(Object.entries(overlayCatalog));
+        ovList.innerHTML = "";
+        overlayEntries.forEach(([name, entry]) => {
+            ovList.appendChild(buildRow(name, entry, activeOverlayDescs.has(name), (n) => {
+                return activeOverlayDescs.has(n) ? deactivateOverlay(n) : activateOverlay(n);
+            }));
+        });
+    }
+
+    function selectCategory(cat) {
+        selectedCategory = cat;
+        catButtons.forEach((b, name) => b.classList.toggle("active", name === cat));
+        renderLists();
+        if (cat) {
+            const defaultName = Object.entries(basemapCatalog).find(([name, e]) => e.category === cat && e.defaultPick)?.[0];
+            if (defaultName && defaultName !== activeBaseName) {
+                activateBasemap(defaultName).catch(err => console.error("category default basemap failed", err));
+            }
+        }
+    }
+    // Just marks the initial category active -- doesn't go through
+    // selectCategory itself, since that would also try to activateBasemap()
+    // before the map's style/ceiling sentinel exist yet (see the mapReady
+    // chain below, which activates `defaultBase` once they do and calls
+    // renderLists() itself once that's done).
+    selectedCategory = basemapCatalog[defaultBase]?.category || Object.keys(TILES_CATEGORIES)[0];
+    catButtons.get(selectedCategory)?.classList.add("active");
+
+    group.append(btn, panel);
+    root.appendChild(group);
     // Only clicking (not hovering) sets the "open" class -- so it needs its
     // own outside-click dismissal, matching how a click anywhere else in the
     // app closes other flyouts/menus.
@@ -843,7 +971,10 @@ export function fitBoundsForTracks(tracks) {
         bounds = bounds ? bounds.extend(b) : b;
     });
     if (!bounds) return;
-    state.map.fitBounds(bounds, {padding: 30});
+    // flyTo, not easeTo, to match fitBounds()'s own default transition (its
+    // internal _fitInternal() flies unless the caller passes `linear:true`).
+    const camera = cameraForBoundsCorrected(state.map, bounds, mapPadding());
+    state.map.flyTo(camera);
 }
 
 // Backs the map's own recenter button -- refits to whatever's currently

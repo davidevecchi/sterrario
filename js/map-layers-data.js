@@ -737,7 +737,7 @@ function vectorStyleBasemap(styleUrl) {
 // The two group-toggle buttons' own icons (distinct from the per-row
 // pictograms below): a folded map for basemaps, a stack of layers for
 // overlays.
-export const SWITCHER_BUTTON_ICONS = {base: "map", overlay: "layers"};
+export const SWITCHER_BUTTON_ICONS = {base: "layers", overlay: "layers"};
 
 // Only keep entries with a real (non-null) factory -- commented-out
 // providers above stay documented in place (icon/description preserved for
@@ -746,5 +746,29 @@ function activeEntries(catalog) {
     return Object.fromEntries(Object.entries(catalog).filter(([, entry]) => entry.factory));
 }
 
-export const ACTIVE_BASEMAPS = activeEntries(BASEMAPS);
-export const ACTIVE_OVERLAYS = activeEntries(OVERLAYS);
+// The layer-switcher panel's quick-pick category row is a fixed set of 7
+// (see js/map-layers.js's buildLayerSwitcher / res/original/ui.svg): each
+// of the 6 named categories maps onto one existing `icon` value already on
+// BASEMAPS/OVERLAYS entries (derived, not hand-tagged per entry, so newly
+// added entries fall into a category automatically); every other icon
+// group -- regardless of how many entries it has -- collapses into "Altro".
+export const TILES_CATEGORIES = {
+    Standard: {icon: "map", defaultBasemap: "OpenStreetMap"},
+    Topo: {icon: "explore", defaultBasemap: "OpenTopoMap"},
+    Satellite: {icon: "satellite_alt", defaultBasemap: "Esri Satellite"},
+    Rilievo: {icon: "altitude", defaultBasemap: "EOX Hillshade"},
+    Ciclismo: {icon: "pedal_bike", defaultBasemap: "CyclOSM"},
+    Escursioni: {icon: "hiking", defaultBasemap: "OpenHikingMap"},
+    Altro: {icon: "category", defaultBasemap: "Esri NatGeo"},
+};
+
+function withCategory(catalog) {
+    return Object.fromEntries(Object.entries(catalog).map(([name, entry]) => {
+        const category = Object.entries(TILES_CATEGORIES).find(([, {icon}]) => icon === entry.icon)?.[0] || "Altro";
+        const defaultPick = TILES_CATEGORIES[category].defaultBasemap === name;
+        return [name, {...entry, category, defaultPick}];
+    }));
+}
+
+export const ACTIVE_BASEMAPS = withCategory(activeEntries(BASEMAPS));
+export const ACTIVE_OVERLAYS = withCategory(activeEntries(OVERLAYS));

@@ -1,6 +1,8 @@
-/* The bussola's own breadcrumb: All Trips > Trip > Track, each earlier crumb
-   clickable to jump straight back to that level -- the whole path is always
-   visible, at any depth, right at the fixed top of the sidebar. */
+/* The map's own floating breadcrumb (see .map-breadcrumb in
+   css/map-markers.css): up to three pill chips -- root ("Tutti i viaggi",
+   always shown), trip, and track -- each its own hover-dropdown flyout,
+   joined by a "›" between any two that are actually shown (never a
+   leading one before the root chip, since it's always first). */
 .breadcrumb {
   display: flex;
   align-items: center;
@@ -20,10 +22,9 @@
   font: inherit;
 }
 .crumb:hover { color: var(--accent); }
-/* Current position in the hierarchy: same type treatment as any other crumb
-   (no more color/tracking drift), called out with a bold underline in the
-   trip's own color instead -- Sterrario opts out of the underline below,
-   since its color already fixes it as the constant "home" anchor. */
+/* Current position in the hierarchy, for the sidebar title (#tripTitle,
+   only ever "current" at the root level, plain text underline) -- the
+   breadcrumb's own chips use .crumb-chip.crumb-current below instead. */
 .crumb-current {
   color: var(--text-muted);
   cursor: default;
@@ -33,22 +34,150 @@
   text-underline-offset: 4px;
 }
 .crumb-current:hover { color: var(--text-muted); text-decoration-color: var(--crumb-color, var(--accent-2)); }
-/* The track crumb stays clickable even while current -- clicking it again
-   steps up to the trip level, so it needs its own pointer/hover cues. */
-.crumb-current[data-level] { cursor: pointer; }
-.crumb-current[data-level]:hover { color: var(--accent); }
 #tripTitle.crumb-current { text-decoration: none; }
+
+/* Chip look for the floating breadcrumb's trip/track pills -- same
+   card/stamp language as .layer-switcher-btn, rounded into a full pill.
+   The trip chip is always clickable (stepping up a level is a harmless
+   no-op from the level it's already at); "current" (the deepest actual
+   selection) is called out with a filled, colored border instead of the
+   plain-text underline used elsewhere, since a chip already carries its own
+   background/border. The day chip only gets that treatment once an actual
+   day is active -- otherwise it shows the read-only "Giorni I-XX" status
+   (see .crumb-chip-disabled below) and isn't clickable at all. */
+.crumb-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  padding: 7px 14px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  box-shadow: 2px 2px 0 var(--shadow-color);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.crumb-chip:hover { color: var(--accent); border-color: var(--accent); }
+.crumb-chip.crumb-current {
+  color: var(--text);
+  cursor: pointer;
+  border-color: var(--crumb-color, var(--accent-2));
+  border-width: 2px;
+  padding: 6px 13px;
+  text-decoration: none;
+}
+.crumb-chip .day-icon { width: 18px; height: 18px; flex-shrink: 0; }
+/* Read-only "Giorni I-XX" state (js/sidebar.js's renderBreadcrumb, whole
+   trip selected, no single day active) -- faded rather than bordered like
+   crumb-current, and not clickable, since it's just a status label, not a
+   level of its own; the trip chip carries the colored border instead. */
+.crumb-chip-disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.crumb-chip-disabled:hover { color: var(--text-muted); border-color: var(--border-strong); }
+
+/* Connects two chips that are both actually shown (trip›track) -- never
+   rendered before the first chip. Its own small filled roundel (not bare
+   text) because this breadcrumb floats directly over the live map now
+   (unlike its old home inside the parchment topbar): plain muted-brown
+   text with no backing of its own all but disappears over a busy satellite
+   tile, so it gets the same solid card backing as the chips either side. */
 .crumb-sep {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
   color: var(--text-muted);
-  font-size: 22px;
-  font-weight: 100;
+  font-size: 26px;
+  font-weight: 700;
   line-height: 1;
-  align-self: center;
-  margin: 0 9px;
-  /* The glyph's own ink sits a few px below the surrounding text's baseline
-     (measured, not eyeballed) -- nudge it back up so it lines up instead of
-     trailing low against the crumb labels either side of it. */
-  transform: translateY(-3px);
+  /* No card/roundel backing -- legible over the live map behind it (this
+     breadcrumb floats directly over the map, not a solid topbar) via
+     weight/size and a dark drop shadow instead. */
+  text-shadow: 0 1px 2px var(--shadow-color);
+}
+
+/* Hover flyout shared by all three chips (js/sidebar.js's tripDropdownHtml/
+   trackDropdownHtml) -- same flyout-on-hover mechanics and card look as
+   .layer-switcher-panel. */
+.crumb-dropdown-wrap { position: relative; }
+/* Bridges the visual gap between the chip and its dropdown (.crumb-dropdown's
+   own margin-top below) with an invisible hit-area -- without it, moving the
+   mouse straight down from the chip crosses a strip that belongs to neither
+   element, dropping out of `:hover` and closing the dropdown before the
+   pointer ever reaches it. */
+.crumb-dropdown-wrap::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  height: 10px;
+}
+.crumb-dropdown {
+  display: none;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 6px;
+  /* Never narrower than the pill that opens it (min-width:100%, relative to
+     .crumb-dropdown-wrap's own width, which matches the chip button's) --
+     but still grows to fit whichever row's text is longest instead of
+     wrapping/clipping it (width:max-content, floored by that min-width). */
+  min-width: 100%;
+  width: max-content;
+  max-width: 320px;
+  max-height: min(60vh, 420px);
+  overflow-y: auto;
+  padding: 6px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  box-shadow: 3px 3px 0 var(--shadow-color);
+  z-index: 30;
+}
+.crumb-dropdown-wrap:hover .crumb-dropdown { display: block; }
+.crumb-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 6px 8px;
+  border-radius: 4px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.crumb-dropdown-item:hover { background: var(--bg-alt); }
+.crumb-dropdown-item.active { color: var(--accent); font-weight: 600; }
+/* Track dropdown rows (js/sidebar.js's trackDropdownHtml) carry an
+   activity icon before the name -- sized down from .day-icon's 40px
+   default (css/map-markers.css) to fit a dropdown row. */
+.crumb-dropdown-item .day-icon { width: 20px; height: 20px; flex-shrink: 0; }
+/* Trip dropdown rows (js/sidebar.js's tripDropdownHtml) carry a fixed
+   newest-first numeral before the name. */
+.crumb-dropdown-index { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+/* Day dropdown rows (js/sidebar.js's trackDropdownHtml) put the index after
+   the activity icon instead of before the name -- given a fixed, right-
+   aligned width so every row's "." lines up regardless of digit count. */
+.crumb-dropdown-index-day { min-width: 1.4em; text-align: right; }
+.crumb-dropdown-all {
+  color: var(--text-muted);
+  font-family: var(--font-display);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+  padding-bottom: 8px;
+  border-radius: 0;
 }
 
 .timeline-list { display: flex; flex-direction: column; gap: 4px; }
@@ -124,6 +253,13 @@
 .tl-activity-tally .day-icon { width: 24px; height: 24px; }
 .tl-activity-tally .activity-tally-item { font-size: 11px; }
 
-.tl-chev { flex-shrink: 0; font-size: 18px; color: var(--text-muted); }
+.tl-chev {
+  flex-shrink: 0;
+  font-size: 18px;
+  color: var(--text-muted);
+  opacity: 0;
+  transition: opacity .12s;
+}
+.timeline-row:hover .tl-chev, .timeline-row.active .tl-chev { opacity: 1; }
 .tl-leaf { flex-shrink: 0; font-size: 8px; color: var(--text-muted); opacity: 0.6; align-self: center; }
 

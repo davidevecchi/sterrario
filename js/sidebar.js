@@ -7,7 +7,7 @@ import {
   HIGHWAY_LABELS, GRADE_BUCKETS, gradeColor, altitudeBucket, buildAltitudeLegendBuckets, ACTIVITY_LABELS, ACTIVITY_COLORS, dayIconHtml, activityTallyHtml,
 } from "./colors.js";
 import { fmtKmRound, fmtM, fmtDuration, fmtDate, fmtDateRange, toRoman, realDayNumber } from "./format.js";
-import { categoryPercents, visibleTracks } from "./map-layers.js";
+import { categoryPercents, visibleTracks, showTrackHoverHighlight, clearTrackHoverHighlight } from "./map-layers.js";
 import { setLegendSelect, clearLegendSelect } from "./chart.js";
 import { selectAll, selectTrip, selectDay } from "./selection.js";
 
@@ -54,6 +54,54 @@ function sortedTracks(trip) {
   return [...trip.tracks].sort((a, b) => cmp(a, b) * state.tripSortDir);
 }
 
+// Hover flyout under the trip chip, listing every trip so switching trips
+// doesn't require a detour through the sidebar's own (now auto-collapsing)
+// picker panel -- same list/order as that panel, just a quick-jump copy of
+// it living right next to the "where am I" breadcrumb. "Tutti i viaggi"
+// sits on top, set off from the trip list below by its own separator/rule
+// (.crumb-dropdown-all's border-bottom).
+function tripDropdownHtml(activeTripId) {
+  // Always newest-first here, independent of the picker panel's current
+  // sort/direction -- this flyout is a quick-jump list, not the sortable
+  // picker, so it keeps one fixed, predictable order.
+  const trips = [...state.trips].sort(TRIP_SORTERS.date).reverse();
+  const items = trips.map((t, i) =>
+    `<button type="button" class="crumb-dropdown-item${t.id === activeTripId ? " active" : ""}" data-trip-id="${t.id}"><span class="crumb-dropdown-index">${trips.length - i}.</span> ${t.name}</button>`
+  ).join("");
+  return `<div class="crumb-dropdown">
+    <button type="button" class="crumb-dropdown-item crumb-dropdown-all" data-level="all">Tutti i viaggi</button>
+    ${items}
+  </div>`;
+}
+
+// "Giorni I-XX" range label for a trip's whole-days view, echoing the
+// "Giorno <roman>" naming used for individual day chips/titles elsewhere --
+// a single-day trip has no range to show, so it falls back to "Giorno I".
+function allDaysLabel(trip) {
+  return trip.summary.num_days <= 1 ? "Giorno I" : `Giorni I-${toRoman(trip.summary.num_days)}`;
+}
+
+// "Giorno <roman>" label for a single track, using the same real-calendar-day
+// numbering (falling back to the name-parsed number) as the picker list's own
+// day rows, rather than the track's raw name -- so the breadcrumb and its
+// dropdown always agree with the picker on which day a track actually is.
+function trackDayLabel(trip, track) {
+  return `Giorno ${toRoman(realDayNumber(trip.summary.start_t, track.start_t) ?? trackSidebarDayNumber(track))}`;
+}
+
+// Hover flyout under the day chip, listing every track of the active trip
+// (in its own day order, not the picker panel's current sort) so the whole
+// trip can be paged through without leaving the map. Each row carries its
+// activity icon, same as the sidebar's own day rows.
+function trackDropdownHtml(trip, activeTrackId) {
+  const items = trip.tracks.map((t, i) =>
+    `<button type="button" class="crumb-dropdown-item${t.id === activeTrackId ? " active" : ""}" data-trip-id="${trip.id}" data-day-id="${t.id}"><span class="crumb-dropdown-index crumb-dropdown-index-day">${i + 1}.</span>${dayIconHtml(t)}<span>${trackDayLabel(trip, t)}</span></button>`
+  ).join("");
+  return `<div class="crumb-dropdown">
+    ${items}
+  </div>`;
+}
+
 export function renderBreadcrumb() {
   const nav = document.getElementById("breadcrumb");
   const level = currentLevel();
@@ -64,36 +112,67 @@ export function renderBreadcrumb() {
   // separate "Viaggi" segment is needed here -- it'd just repeat the title.
   document.getElementById("tripTitle").classList.toggle("crumb-current", level === "all");
 
-  // The picker panel header echoes the same "where am I" context at every
-  // level, including the root (a placeholder title, no back button since
-  // there's nowhere further up). The trip name jumps straight to the trip
-  // (useful from the track level); the back button always goes all the
-  // way back to the full trip list.
-  document.getElementById("pickerBack").hidden = !trip;
-  document.getElementById("pickerContextLabel").innerHTML = trip
-    ? `<button class="picker-context-trip" data-trip-id="${trip.id}">${trip.name}</button><span class="picker-context-date">${fmtDateRange(trip.summary.start_t, trip.summary.end_t)}</span>`
-    : "Tutti i viaggi";
-
-  let html = "";
+  // Root ("Tutti i viaggi") and trip share a single chip -- "Tutti i
+  // viaggi" is never shown alongside a trip name, only in place of it
+  // before any trip is picked. Its hover dropdown always offers both "Tutti
+  // i viaggi" and every trip regardless of which label is currently
+  // showing, so switching back to the root level is always one hover away.
+  const rootOrTripLabel = trip ? trip.name : "Tutti i viaggi";
+  // The trip chip carries the colored "current" border whenever no single
+  // day is active (root level, or a trip selected as a whole) -- the day
+  // chip only takes it over once an actual day is picked.
+  let html = `<span class="crumb-dropdown-wrap">
+    <button type="button" class="crumb crumb-chip${!track ? " crumb-current" : ""}"
+      ${trip ? `data-nav="trip" data-trip-id="${trip.id}"` : `data-nav="all"`}
+      title="${rootOrTripLabel}" ${trip ? `style="--crumb-color:${trip._color}"` : ""}>${rootOrTripLabel}</button>
+    ${tripDropdownHtml(trip ? trip.id : null)}
+  </span>`;
   if (trip) {
     html += `<span class="crumb-sep">›</span>`;
-    if (track) {
-      html += `<button class="crumb" data-level="trip" data-trip-id="${trip.id}" title="Torna al percorso intero">${trip.name}</button>`;
-    } else {
-      html += `<span class="crumb crumb-current" aria-current="true" style="--crumb-color:${trip._color}">${trip.name}</span>`;
-    }
-  }
-  if (track) {
-    html += `<span class="crumb-sep">›</span><button class="crumb crumb-current" data-level="trip" data-trip-id="${trip.id}" aria-current="true" title="Torna al percorso intero" style="--crumb-color:${trip._color}">${track.name}</button>`;
+    // "Giorni I-XX" is a read-only status, not a level of its own -- shown
+    // faded (crumb-chip-disabled, not crumb-current) whenever the whole
+    // trip is selected, with no click behavior and no data-nav; only an
+    // actually active day gets the real current-chip treatment and a click
+    // back up to the trip level.
+    const dayLabel = track ? `${dayIconHtml(track)}<span>${trackDayLabel(trip, track)}</span>` : allDaysLabel(trip);
+    html += `<span class="crumb-dropdown-wrap">
+      <button type="button" class="crumb crumb-chip${track ? " crumb-current" : " crumb-chip-disabled"}" ${track ? `data-nav="trip" data-trip-id="${trip.id}"` : ""} title="${track ? trackDayLabel(trip, track) : allDaysLabel(trip)}" style="--crumb-color:${trip._color}">${dayLabel}</button>
+      ${trackDropdownHtml(trip, track ? track.id : null)}
+    </span>`;
   }
   nav.innerHTML = html;
 
-  nav.querySelectorAll(".crumb[data-level]").forEach(btn => {
+  nav.querySelectorAll(".crumb[data-nav]").forEach(btn => {
     btn.addEventListener("click", () => {
-      if (btn.dataset.level === "all") selectAll();
-      else if (btn.dataset.level === "trip") selectTrip(btn.dataset.tripId);
+      if (btn.dataset.nav === "all") selectAll();
+      else if (btn.dataset.nav === "trip") selectTrip(btn.dataset.tripId);
     });
   });
+  nav.querySelectorAll(".crumb-dropdown-item").forEach(btn => {
+    btn.addEventListener("click", () => {
+      if (btn.dataset.level === "all") selectAll();
+      else if (btn.dataset.level === "all-days") selectTrip(btn.dataset.tripId);
+      else if (btn.dataset.dayId) selectDay(btn.dataset.tripId, btn.dataset.dayId);
+      else if (btn.dataset.tripId) selectTrip(btn.dataset.tripId);
+    });
+  });
+
+  // Hovering the "Giorno" breadcrumb chip, or one of its dropdown rows,
+  // glows the corresponding track on the map the same way the map's own
+  // hover does (showTrackHoverHighlight) -- gives a way to spot a day's
+  // route without having to go hunt for it on the map first.
+  nav.querySelectorAll('.crumb-dropdown-item[data-day-id]').forEach(btn => {
+    btn.addEventListener("mouseenter", () => showTrackHoverHighlight(btn.dataset.dayId));
+    btn.addEventListener("mouseleave", () => clearTrackHoverHighlight());
+  });
+  if (track) {
+    const dayCrumbWrap = nav.querySelectorAll(".crumb-dropdown-wrap")[1];
+    const dayChipBtn = dayCrumbWrap && dayCrumbWrap.querySelector(".crumb-chip");
+    if (dayChipBtn) {
+      dayChipBtn.addEventListener("mouseenter", () => showTrackHoverHighlight(track.id));
+      dayChipBtn.addEventListener("mouseleave", () => clearTrackHoverHighlight());
+    }
+  }
 }
 
 function renderTripSort() {

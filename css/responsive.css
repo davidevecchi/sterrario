@@ -1,21 +1,20 @@
 
 @media (max-width: 820px) {
   :root { --sidebar-w: 82vw; }
+  .mobile-menu-btn { display: flex; }
   #sidebarToggle { display: block; }
-  /* The title gives way to the breadcrumb on narrow screens -- there's not
-     room for both, and the breadcrumb is the one answering "where am I". */
-  #tripTitle { display: none; }
+  /* Shifted right to clear the floating menu button occupying its usual
+     top-left spot on narrow screens (see .mobile-menu-btn above). */
+  .map-breadcrumb { left: 60px; }
   #app {
-    grid-template-areas:
-      "topbar"
-      "map"
-      "elevation";
+    grid-template-areas: "map";
     grid-template-columns: 1fr;
-    grid-template-rows: var(--topbar-h) 1fr var(--elevation-h);
+    grid-template-rows: 1fr;
   }
+  #elevationPanel { margin: 0 8px 8px; }
   #sidebar {
     position: fixed;
-    top: var(--topbar-h);
+    top: 0;
     left: 0;
     bottom: 0;
     width: var(--sidebar-w);
@@ -28,7 +27,7 @@
   #app.sidebar-open::after {
     content: "";
     position: fixed;
-    inset: var(--topbar-h) 0 0 0;
+    inset: 0 0 0 0;
     background: rgba(0,0,0,0.35);
     z-index: 900;
   }

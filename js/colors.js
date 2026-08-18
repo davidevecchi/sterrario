@@ -95,7 +95,8 @@ export const HIGHWAY_LABELS = {
 // hue/lightness can get without distorting hue -- so the ramp reads as
 // vivid and contrasty rather than muddy.
 export const GRADE_BUCKETS = [
-  { max: -16, color: "#007e11", label: "Discesa estrema (< -16%)" },
+  { max: -32, color: "#00590c", label: "Discesa vertiginosa (< -32%)" },
+  { max: -16, color: "#007e11", label: "Discesa estrema (-32 / -16%)" },
   { max: -8, color: "#429400", label: "Discesa dura (-16 / -8%)" },
   { max: -4, color: "#86a800", label: "Discesa moderata (-8 / -4%)" },
   { max: -2, color: "#c0bb00", label: "Discesa leggera (-4 / -2%)" },
@@ -103,7 +104,8 @@ export const GRADE_BUCKETS = [
   { max: 4, color: "#f49c00", label: "Salita leggera (2 / 4%)" },
   { max: 8, color: "#e76a00", label: "Salita moderata (4 / 8%)" },
   { max: 16, color: "#d13100", label: "Salita dura (8 / 16%)" },
-  { max: Infinity, color: "#b30000", label: "Salita estrema (> 16%)" },
+  { max: 32, color: "#b30000", label: "Salita estrema (16 / 32%)" },
+  { max: Infinity, color: "#800000", label: "Salita vertiginosa (> 32%)" },
 ]
 export function gradeColor(grade) {
   for (const b of GRADE_BUCKETS) if (grade <= b.max) return b.color;

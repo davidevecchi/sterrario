@@ -18,7 +18,7 @@ export function openBoundaryMilestone(tripId, end) {
 export function renderPoiListFor(tripId) {
   state.activePoiTripId = tripId;
   const trip = state.tripById[tripId];
-  document.getElementById("poiListLabel").textContent = `Punti di interesse`;
+  document.getElementById("poiListLabel").textContent = `Posti`;
   const ul = document.getElementById("poiList");
   ul.innerHTML = "";
   document.getElementById("poiCount").textContent = trip.pois.length;

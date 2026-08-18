@@ -17,6 +17,53 @@
    20px-wide hit-line shape on every tap. */
 #map canvas { -webkit-tap-highlight-color: transparent; }
 
+/* Reskin MapLibre's built-in controls (zoom/compass, geolocate, scale) to
+   match the app's parchment/stamp look instead of their default plain white
+   squares -- same offset shadow + double border as .map-recenter-btn. */
+.maplibregl-ctrl-group {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  box-shadow: 2px 2px 0 var(--shadow-color);
+  overflow: hidden;
+}
+.maplibregl-ctrl-group button {
+  width: 36px;
+  height: 36px;
+  background: transparent;
+}
+.maplibregl-ctrl-group button + button {
+  border-top: 1px solid var(--border);
+}
+.maplibregl-ctrl-group button:hover { background: var(--bg-alt); }
+.maplibregl-ctrl-icon { filter: sepia(0.4) saturate(1.5) hue-rotate(-10deg); }
+.maplibregl-ctrl-scale {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-top: none;
+  color: var(--text);
+  font-family: var(--font-body);
+  box-shadow: 2px 2px 0 var(--shadow-color);
+}
+
+/* Floating "where am I" pill, top-left over the map itself (mockup:
+   res/original/ui.svg) -- separate from the app's own header bar (which
+   now holds just the hamburger + title), same card look as the recenter/
+   layer-switcher stamps opposite it. Hover-dropdown flyouts on its trip
+   crumb are wired in js/sidebar.js's renderBreadcrumb/tripDropdownHtml. */
+.map-breadcrumb {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 500;
+  max-width: calc(100% - 24px);
+  /* Each chip (.crumb-chip, css/breadcrumb-timeline.css) carries its own
+     pill/card styling -- this is just their positioning container, so no
+     background/border/padding of its own. Wraps instead of scrolling: two
+     short chips never need horizontal scroll, and wrapping degrades better
+     on narrow screens than a hidden scrollable overflow would. */
+}
+
 /* Manual re-fit control, top-right of the map itself (mirrors Leaflet's own
    zoom control sitting top-left) -- needed now that clicking a track/marker
    directly on the map no longer yanks the view (see selectTrip/selectDay's
@@ -25,7 +72,12 @@
    toggles, just standalone (no on/off state, only ever "pressed"). */
 .map-recenter-btn {
   position: absolute;
-  top: 12px;
+  /* Clears MapLibre's own top-right stack (NavigationControl's 3 buttons +
+     GeolocateControl's 1, each 36px per the .maplibregl-ctrl-group override
+     above, plus its default 10px top margin and 10px inter-group gap --
+     10 + 3*36 + 2(borders) + 10 + 36 + 2(border) = ~182px) rather than
+     overlapping it -- see initMap's addControl calls in js/map-layers.js. */
+  top: 182px;
   right: 12px;
   z-index: 500;
   width: 36px;
@@ -54,35 +106,49 @@
   box-shadow: none;
 }
 
+/* Hidden on desktop -- the sidebar is always open there, so its own
+   #sidebarHeader hamburger is all that's ever needed. Shown (as a floating
+   twin, top-left) only under the mobile breakpoint -- see css/responsive.css. */
+.mobile-menu-btn {
+  display: none;
+  top: 12px;
+  left: 12px;
+  right: auto;
+}
+
 /* Basemap/overlay switcher (js/map-layers.js's buildLayerSwitcher) -- a
-   plain DOM node, not a Leaflet control, so it's positioned the same way as
-   .map-recenter-btn above rather than through Leaflet's own control
-   container. Stacked below the recenter button at the same top-right
-   corner (its height + gap), two round stamp buttons one above the other,
-   each flying out its own panel to the left on hover -- same paper/stamp
-   look as every other button on the map. */
+   plain DOM node, not a Leaflet control, positioned bottom-left: left-
+   aligned with the floating elevation card's own 16px margin right above
+   it, and sat directly on top of it (tracking --elevation-h(-collapsed)
+   via the same vars it animates between, so it always clears the card,
+   expanded or collapsed). Top-right stays reserved for MapLibre's native
+   controls and the app's own recenter button. */
 .layer-switcher {
   position: absolute;
-  top: 56px;
-  right: 12px;
+  left: 16px;
+  bottom: calc(var(--elevation-h) + 16px + 12px);
   z-index: 500;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  align-items: flex-end;
+  align-items: flex-start;
+  transition: bottom 0.2s ease;
+}
+#app.elevation-collapsed .layer-switcher {
+  bottom: calc(var(--elevation-h-collapsed) + 16px + 12px);
 }
 .layer-switcher-group {
   position: relative;
 }
 .layer-switcher-btn {
-  width: 36px;
-  height: 36px;
+  width: 52px;
+  height: 52px;
   display: flex;
   align-items: center;
   justify-content: center;
   background: var(--bg-panel);
   border: 1px solid var(--border-strong);
-  border-radius: 50%;
+  border-radius: 14px;
   color: var(--text);
   padding: 0;
   cursor: pointer;
@@ -90,42 +156,161 @@
   box-shadow: 2px 2px 0 var(--shadow-color);
   transition: transform .12s, box-shadow .12s, color .12s, border-color .12s;
 }
-.layer-switcher-btn .msym { font-size: 20px; --msym-opsz: 20; }
+.layer-switcher-btn .msym { font-size: 26px; --msym-opsz: 24; }
 .layer-switcher-group:hover .layer-switcher-btn,
 .layer-switcher-group.open .layer-switcher-btn {
   color: var(--accent);
   border-color: var(--accent);
-  transform: translate(-1px, -1px);
-  box-shadow: 3px 3px 0 var(--shadow-color);
+}
+.layer-switcher-group.open .layer-switcher-btn .msym {
+  font-variation-settings: 'FILL' 1;
 }
 .layer-switcher-btn:active {
   transform: translate(0, 0);
   box-shadow: 2px 2px 0 var(--shadow-color);
 }
 
-/* The flyout panel: hidden by default, revealed by hovering (or, via the
-   "open" class the button's click handler toggles, tapping on touch where
-   there's no hover state) anywhere within the group -- including the panel
-   itself, since it's a descendant of .layer-switcher-group, so moving the
-   pointer from button to panel never drops the hover state in between.
-   Sits flush against the button's left edge (no gap) for the same reason:
-   a gap with nothing under the pointer would count as leaving the group
-   mid-traverse and close the panel before it's reached. */
+/* The flyout panel: hidden by default, revealed by clicking (via the
+   "open" class the button's click handler toggles) anywhere within the
+   group -- including the panel itself, since it's a descendant of
+   .layer-switcher-group, so moving the pointer from button to panel never
+   drops the state. Grows *upward* directly above the button -- top:0
+   shares the button's own top edge and left:0 its left edge, so the
+   panel appears above the button. */
 .layer-switcher-panel {
   display: none;
   position: absolute;
-  top: -1px;
-  right: 36px;
+  bottom: 100%;
+  left: 0;
+  margin-bottom: 8px;
   min-width: 220px;
   max-height: min(70vh, 480px);
   overflow-y: auto;
   padding: 8px 10px;
   background: var(--bg-panel);
   border: 1px solid var(--border-strong);
-  border-radius: 8px;
+  border-radius: 14px;
   box-shadow: 2px 2px 0 var(--shadow-color);
 }
-.layer-switcher-group:hover .layer-switcher-panel,
+/* The single "Mappe" panel (js/map-layers.js's buildLayerSwitcher) is wider
+   than the old per-list flyouts -- it stacks a category quick-pick row, the
+   basemap list, a 2-col overlay grid, and the relocated visibility toggles. */
+.layer-switcher-panel.ls-panel { width: 380px; max-width: min(90vw, 380px); padding: 12px 14px; }
+
+/* Category quick-pick row -- fixed set of 7 (Standard/Topo/Satellite/
+   Ciclismo/Elevazione/Escursioni/Altro, see map-layers-data.js's
+   TILES_CATEGORIES), horizontally scrollable since they don't always fit
+   ("(Carousel)" in res/original/ui.svg). */
+.ls-categories {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding-bottom: 8px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.ls-categories::-webkit-scrollbar { display: none; }
+.ls-cat-btn {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  width: 56px;
+  padding: 6px 2px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.ls-cat-btn:hover { color: var(--text); border-color: var(--border-strong); }
+.ls-cat-btn .msym { font-size: 24px; --msym-opsz: 24; margin-bottom: 2px; }
+.ls-cat-btn .ls-cat-label { font-size: 9px; font-weight: 600; text-align: center; white-space: nowrap; }
+.ls-cat-btn.active {
+  background: var(--bg-alt);
+  border-color: var(--accent);
+  border-width: 2px;
+  color: var(--accent-ink, #fff);
+}
+.ls-cat-btn.active .msym {
+  color: var(--accent);
+  font-variation-settings: 'FILL' 1;
+}
+.ls-cat-btn.active .ls-cat-label {
+  color: var(--accent);
+}
+
+/* Mappe (basemap radio) list -- single column, same look as before. */
+.layer-switcher-list { display: flex; flex-direction: column; }
+
+/* Overlays: 2-col grid (mockup's "Overlays" two columns), each row a
+   checkbox-style entry same as the basemap rows. */
+.ls-overlay-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 6px;
+}
+.ls-overlay-grid .layer-switcher-row-label { white-space: normal; }
+
+/* Visualizzazione: the relocated topbar toggles, now with labels
+   ("better UI with labels" in res/original/ui.svg) -- an even grid of
+   square-ish tiles matching .ls-cat-btn's card look, rather than the bare
+   circular stamp row they were in the topbar (whose grayscale/opacity
+   "off" fade read as washed-out once given a label to sit next to). */
+.layer-switcher-panel .topbar-toggles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(56px, 1fr));
+  gap: 6px;
+  padding-left: 0;
+}
+.layer-switcher-panel .topbar-toggle {
+  width: auto;
+  height: auto;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 2px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-muted);
+  opacity: 1;
+  filter: none;
+  box-shadow: none;
+  transform: translate(0, 0);
+}
+.layer-switcher-panel .topbar-toggle:hover {
+  opacity: 1;
+  filter: none;
+  color: var(--text);
+  border-color: var(--border-strong);
+  transform: none;
+  box-shadow: none;
+}
+.layer-switcher-panel .topbar-toggle.active {
+  opacity: 1;
+  filter: none;
+  background: var(--bg-alt);
+  border-color: var(--accent);
+  border-width: 2px;
+  color: var(--accent-ink, #fff);
+  transform: none;
+  box-shadow: none;
+}
+.layer-switcher-panel .topbar-toggle.active .msym {
+  color: var(--accent);
+  font-variation-settings: 'FILL' 1;
+}
+.layer-switcher-panel .topbar-toggle.active .topbar-toggle-label {
+  color: var(--accent);
+}
+.layer-switcher-panel .topbar-toggle.active:hover {
+  transform: none;
+  box-shadow: none;
+}
+.layer-switcher-panel .topbar-toggle .msym { font-size: 24px; --msym-opsz: 24; margin-bottom: 2px; }
+.topbar-toggle-label { font-size: 9px; font-weight: 600; white-space: nowrap; text-align: center; }
 .layer-switcher-group.open .layer-switcher-panel {
   display: block;
 }

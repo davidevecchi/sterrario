@@ -23,30 +23,17 @@
 <body>
 <div id="app">
 
-  <header id="topbar">
-    <button id="sidebarToggle" aria-label="Menu">☰</button>
-    <h1 id="tripTitle" title="Torna all'elenco viaggi">Sterrario</h1>
-    <nav id="breadcrumb" class="breadcrumb topbar-crumbs"></nav>
-    <div class="topbar-toggles" id="topbarToggles">
-      <button type="button" class="topbar-toggle active" id="toggleTracks" aria-pressed="true" title="Mostra/nascondi tracce"></button>
-      <button type="button" class="topbar-toggle active" id="toggleStarts" aria-pressed="true" title="Mostra/nascondi partenza, arrivo e tappe"></button>
-      <button type="button" class="topbar-toggle active" id="togglePois" aria-pressed="true" title="Mostra/nascondi punti di interesse"></button>
-      <button type="button" class="topbar-toggle" id="togglePhotos" aria-pressed="false" title="Mostra/nascondi foto"></button>
-      <button type="button" class="topbar-toggle active" id="toggleGlobe" aria-pressed="true" title="Vista a globo"></button>
-    </div>
-  </header>
-
   <aside id="sidebar">
+    <div id="sidebarHeader">
+      <button id="sidebarToggle" aria-label="Menu">☰</button>
+      <h1 id="tripTitle" title="Torna all'elenco viaggi">Sterrario</h1>
+    </div>
     <div id="sidebarScroll">
       <section class="panel" id="pickerPanel">
         <h2 class="panel-toggle" id="pickerToggle">
           <button class="chevron" id="pickerChevron" aria-label="Espandi/comprimi">▾</button>
           <span>Percorsi</span>
         </h2>
-        <div class="picker-context" id="pickerContext">
-          <button class="picker-back" id="pickerBack" aria-label="Torna a tutti i percorsi" title="Torna a tutti i percorsi" hidden>←</button>
-          <span id="pickerContextLabel">Tutti i viaggi</span>
-        </div>
         <div class="trip-sort" id="tripSort">
           <button data-sort="date" class="active">Data</button>
           <button data-sort="distance">Distanza</button>
@@ -75,7 +62,7 @@
       <section class="panel collapsed" id="poiListPanel">
         <h2 class="panel-toggle" id="poiListToggle">
           <button class="chevron" id="poiListChevron" aria-label="Espandi/comprimi">▸</button>
-          <span id="poiListLabel">Punti di interesse</span> (<span id="poiCount">0</span>)
+          <span id="poiListLabel">Posti</span> (<span id="poiCount">0</span>)
         </h2>
         <ul id="poiList"></ul>
       </section>
@@ -85,7 +72,26 @@
   <main id="mapWrap">
     <div id="map"></div>
 
+    <!-- Mobile-only: the sidebar's own hamburger (in #sidebarHeader) is
+         off-canvas along with the rest of the sidebar while it's closed, so
+         reopening it needs a control that lives outside it. -->
+    <button type="button" id="mobileMenuBtn" class="map-recenter-btn mobile-menu-btn" aria-label="Menu">☰</button>
+
+    <nav id="breadcrumb" class="breadcrumb map-breadcrumb"></nav>
+
     <button type="button" id="recenterBtn" class="map-recenter-btn" title="Centra la mappa sulla selezione" aria-label="Centra la mappa sulla selezione">⌖</button>
+
+    <!-- Moved into the layers panel's "Visualizzazione" section by
+         js/map-layers.js's buildLayerSwitcher; kept as plain static markup
+         here (rather than built in JS) so js/app.js's wireHeadbarToggle
+         wiring doesn't need to change at all. -->
+    <div class="topbar-toggles" id="topbarToggles" hidden>
+      <button type="button" class="topbar-toggle active" id="toggleTracks" aria-pressed="true" title="Mostra/nascondi tracce"></button>
+      <button type="button" class="topbar-toggle active" id="toggleStarts" aria-pressed="true" title="Mostra/nascondi partenza, arrivo e tappe"></button>
+      <button type="button" class="topbar-toggle active" id="togglePois" aria-pressed="true" title="Mostra/nascondi punti di interesse"></button>
+      <button type="button" class="topbar-toggle" id="togglePhotos" aria-pressed="false" title="Mostra/nascondi foto"></button>
+      <button type="button" class="topbar-toggle active" id="toggleGlobe" aria-pressed="true" title="Vista a globo"></button>
+    </div>
 
     <div id="poiNavRow" class="hidden">
       <button id="poiPrev" class="poi-side-nav poi-side-nav-prev" aria-label="Precedente">

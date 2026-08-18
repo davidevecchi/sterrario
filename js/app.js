@@ -19,9 +19,12 @@ import { themeChartDefaults } from "./chart.js";
 import { icoHtml } from "./poi-icons.js";
 
 function wireUi() {
-  document.getElementById("sidebarToggle").addEventListener("click", () => {
-    document.getElementById("app").classList.toggle("sidebar-open");
-  });
+  const toggleSidebarOpen = () => document.getElementById("app").classList.toggle("sidebar-open");
+  document.getElementById("sidebarToggle").addEventListener("click", toggleSidebarOpen);
+  // Floating mobile-only twin of the button above -- see index.html's
+  // #mobileMenuBtn comment for why the sidebar's own hamburger can't reopen
+  // it once it's off-canvas.
+  document.getElementById("mobileMenuBtn").addEventListener("click", toggleSidebarOpen);
 
   // The app title doubles as the breadcrumb's root crumb.
   const tripTitleEl = document.getElementById("tripTitle");
@@ -37,13 +40,6 @@ function wireUi() {
   document.getElementById("pickerToggle").addEventListener("click", () => {
     const collapsed = document.getElementById("pickerPanel").classList.toggle("collapsed");
     document.getElementById("pickerChevron").textContent = collapsed ? "▸" : "▾";
-  });
-
-  document.getElementById("pickerBack").addEventListener("click", () => selectAll());
-
-  document.getElementById("pickerContext").addEventListener("click", (e) => {
-    const btn = e.target.closest(".picker-context-trip");
-    if (btn) selectTrip(btn.dataset.tripId);
   });
 
   document.querySelectorAll("#tripSort button").forEach(btn => {
@@ -62,6 +58,9 @@ function wireUi() {
 
   document.getElementById("elevationCollapse").addEventListener("click", () => {
     document.getElementById("app").classList.toggle("elevation-collapsed");
+    // Map padding re-centering is handled continuously by the
+    // ResizeObserver on #elevationPanel itself (see initMap) -- only the
+    // chart needs this one-off deferred resize.
     setTimeout(() => { if (state.chart) state.chart.resize(); }, 220);
   });
 
@@ -101,35 +100,35 @@ function wireUi() {
   // Headbar layer toggles -- each flips its own boolean and re-runs the
   // matching visibility function, which still layers the trip-scoping
   // (only the active trip's group) on top of the toggle.
-  function wireHeadbarToggle(id, icon, onToggle) {
+  function wireHeadbarToggle(id, icon, label, onToggle) {
     const btn = document.getElementById(id);
-    btn.innerHTML = icoHtml(icon);
+    btn.innerHTML = `${icoHtml(icon)}<span class="topbar-toggle-label">${label}</span>`;
     btn.addEventListener("click", () => {
       const active = onToggle();
       btn.classList.toggle("active", active);
       btn.setAttribute("aria-pressed", String(active));
     });
   }
-  wireHeadbarToggle("toggleTracks", "conversion_path", () => {
+  wireHeadbarToggle("toggleTracks", "conversion_path", "Tracce", () => {
     state.tracksVisible = !state.tracksVisible;
     setTracksVisible(state.tracksVisible);
     return state.tracksVisible;
   });
-  wireHeadbarToggle("toggleStarts", "flag", () => {
+  wireHeadbarToggle("toggleStarts", "flag", "Tappe", () => {
     state.startsVisible = !state.startsVisible;
     updateClusterVisibility();
     return state.startsVisible;
   });
-  wireHeadbarToggle("togglePois", "location_on", () => {
+  wireHeadbarToggle("togglePois", "location_on", "Posti", () => {
     state.poisVisible = !state.poisVisible;
     updateClusterVisibility();
     return state.poisVisible;
   });
-  wireHeadbarToggle("togglePhotos", "photo_camera", () => {
+  wireHeadbarToggle("togglePhotos", "photo_camera", "Foto", () => {
     setPhotosVisible(!state.photosVisible);
     return state.photosVisible;
   });
-  wireHeadbarToggle("toggleGlobe", "globe", () => {
+  wireHeadbarToggle("toggleGlobe", "globe", "Globo", () => {
     state.globeActive = !state.globeActive;
     state.map.setProjection({ type: state.globeActive ? "globe" : "mercator" });
     return state.globeActive;

@@ -16,7 +16,7 @@ import {
 } from "./map-layers.js";
 import { openPoiByIndex } from "./poi.js";
 import { openPhoto } from "./photos.js";
-import { selectDay, selectAll, selectTrip } from "./selection.js";
+import { selectDay } from "./selection.js";
 import { perfMark } from "./perf-debug.js";
 
 const OFFTRACK_THRESHOLD_M = 1500;
@@ -796,23 +796,15 @@ function drawChart(chartPoints, poiPoints, photoPoints, options) {
   state.chart._chartColors = colors;
 }
 
-// Shared by the day-view and whole-trip footer info rows: the same
-// back-button + date-range "context" component used in the picker panel,
-// followed by view-specific stats. Same semantics as the picker panel too:
-// the arrow always goes all the way back to all trips, while the trip
-// name jumps straight to that trip (a no-op from the whole-trip view
-// itself, but the meaningful "up one level" step from a day view).
+// Shared by the day-view and whole-trip footer info rows: a date-range
+// stat followed by view-specific stats. The breadcrumb at the top of the
+// sidebar already owns "where am I"/back navigation, so this row no longer
+// duplicates it with its own back button + trip name.
 function renderFooterBackInfo(trip, dateRange, extraHtml) {
   document.getElementById("elevationDayInfo").innerHTML = `
-    <span class="picker-context">
-      <button class="picker-back" id="footerBackBtn" aria-label="Torna a tutti i viaggi" title="Torna a tutti i viaggi">←</button>
-      <button class="picker-context-trip" id="footerBackLabel">${trip.name}</button>
-      <span class="picker-context-date">${dateRange}</span>
-    </span>
+    <span class="picker-context-date">${dateRange}</span>
     ${extraHtml}
   `;
-  document.getElementById("footerBackBtn").addEventListener("click", () => selectAll());
-  document.getElementById("footerBackLabel").addEventListener("click", () => selectTrip(trip.id));
 }
 
 export function renderDayChart(trip, track) {
@@ -828,11 +820,11 @@ export function renderDayChart(trip, track) {
 
   renderFooterBackInfo(trip, fmtDateRange(trip.summary.start_t, trip.summary.end_t), `
     <span>${dayIconHtml(track)} <b>${track.name}</b></span>
-    <span>${fmtKmRound(track.distance_m)}</span>
-    <span>+${fmtM(track.ele_gain)} / -${fmtM(track.ele_loss)}</span>
-    <span>${track.ele_min != null ? Math.round(track.ele_min) + "–" + Math.round(track.ele_max) + " m" : ""}</span>
-    <span>${Math.round(gradeMin)}% / +${Math.round(gradeMax)}%</span>
-    <span>${fmtDuration(track.duration_s)}</span>
+    <span>${icoHtml("route")} ${fmtKmRound(track.distance_m)}</span>
+    <span>${icoHtml("trending_up")} +${fmtM(track.ele_gain)} <span class="stat-sep">/</span> ${icoHtml("trending_down")} -${fmtM(track.ele_loss)}</span>
+    <span>${track.ele_min != null ? icoHtml("altitude") + " " + Math.round(track.ele_min) + "–" + Math.round(track.ele_max) + " m" : ""}</span>
+    <span>${icoHtml("elevation")} ${Math.round(gradeMin)}% <span class="stat-sep">/</span> +${Math.round(gradeMax)}%</span>
+    <span>${icoHtml("schedule")} ${fmtDuration(track.duration_s)}</span>
   `);
 
   const poiPoints = poiChartPointsForTrack(trip, track, 0);
@@ -874,11 +866,11 @@ export function renderWholeTripChart(trip) {
   const eleMax = Math.max(...trip.tracks.map(t => t.ele_max));
   const grade = tripGradeMinMax(trip);
   renderFooterBackInfo(trip, fmtDateRange(s.start_t, s.end_t), `
-    <span>${fmtKmRound(s.total_distance_m)}</span>
-    <span>+${fmtM(s.total_ele_gain)} / -${fmtM(s.total_ele_loss)}</span>
-    <span>${Math.round(eleMin)}–${Math.round(eleMax)} m</span>
-    <span>${Math.round(grade.min)}% / +${Math.round(grade.max)}%</span>
-    <span>${s.num_days} giorni</span>
+    <span>${icoHtml("route")} ${fmtKmRound(s.total_distance_m)}</span>
+    <span>${icoHtml("trending_up")} +${fmtM(s.total_ele_gain)} <span class="stat-sep">/</span> ${icoHtml("trending_down")} -${fmtM(s.total_ele_loss)}</span>
+    <span>${icoHtml("altitude")} ${Math.round(eleMin)}–${Math.round(eleMax)} m</span>
+    <span>${icoHtml("elevation")} ${Math.round(grade.min)}% <span class="stat-sep">/</span> +${Math.round(grade.max)}%</span>
+    <span>${icoHtml("schedule")} ${s.num_days} giorni</span>
   `);
 
   drawChart(chartPoints, poiPoints, photoPoints, { plugins: { dayBoundaries: { boundaries } } });
